@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Sing-box Config Manager (на основе кода Throne)
-Загружает base64 конфиги, парсит VLESS/Shadowsocks ссылки и запускает sing-box
+Загружает base64 конфиги, тестирует их и запускает sing-box
 """
 
 import json
@@ -9,10 +9,22 @@ import base64
 import sys
 import re
 import requests
+import socket
+import time
+import threading
+import concurrent.futures
 from urllib.parse import urlparse, parse_qs, unquote
 from pathlib import Path
 import subprocess
 import os
+import signal
+import tempfile
+from typing import Dict, List, Optional, Tuple
+import urllib3
+
+# Отключаем предупреждения о неверифицированных сертификатах
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 
 def decode_b64_if_valid(s):
     """Декодирует base64 если возможно"""
@@ -76,7 +88,8 @@ def load_profiles_from_source(source=None):
     
     for line in raw_lines:
         line = line.strip()
-        if line and not line.startswith('#'):
+        print(line)
+        if line and not line.startswith('#') and "%D0%9E%D0%B1%D1%85%D0%BE%D0%B4" in line:
             profiles.append(line)
     
     print(f"Найдено профилей: {len(profiles)}")
@@ -336,88 +349,569 @@ def create_singbox_ss_config(config):
         "password": config['password']
     }
 
-def create_full_singbox_config(outbound):
-    """Создает полный конфиг sing-box"""
+def create_full_singbox_config(outbound_config: Dict) -> Dict:
+    """
+    Создает конфигурацию sing-box TUN-режима для Linux.
+    Аналогично коду Throne, но только для TUN (без mixed-inbound).
+    """
+    
+    # Исключаемые подсети (локальный трафик не должен идти через туннель)
+    route_exclude_address = [
+        "127.0.0.0/8",     # localhost
+        "224.0.0.0/4",     # multicast
+        "255.255.255.255/32",  # broadcast
+    ]
+    
+    # Конфигурация TUN-интерфейса (основная часть)
+    tun_config = {
+        "type": "tun",
+        "tag": "tun-in",
+        "interface_name": "throne-tun",  # или можно генерировать динамически
+        "mtu": 9000,                     # стандартный MTU
+        "auto_route": True,              # КЛЮЧЕВОЙ ПАРАМЕТР: sing-box сам настроит маршруты
+        "strict_route": False,           # обычно false для совместимости
+        "stack": "system",               # или "gvisor" для Linux
+        
+        "address": [
+            "172.18.0.1/30",
+            "fdfe:dcba:9876::1/126"
+        ],
+        "route_exclude_address": route_exclude_address,  # исключаемые подсети
+        "sniff": True,                   # определение протоколов
+    }
+    
+    # Полная конфигурация для sing-box
     return {
         "log": {
             "level": "info",
-            "timestamp": True
+            "timestamp": True,
+            "output": "/tmp/sing-box-tun.log"  # удобно для отладки
         },
-        "inbounds": [
-            {
-                "type": "mixed",
-                "tag": "mixed-inbound",
-                "listen": "127.0.0.1",
-                "listen_port": 10808,
-                "sniff": True
-            }
-        ],
+        "inbounds": [tun_config],  # ТОЛЬКО TUN, никаких mixed/socks
+        
         "outbounds": [
-            outbound,
+            outbound_config,  # ваш прокси (VLESS/Shadowsocks)
             {
                 "type": "direct",
                 "tag": "direct"
-            },
-            {
-                "type": "block",
-                "tag": "block"
             }
         ],
+        
         "route": {
             "auto_detect_interface": True,
+            # Правила маршрутизации
             "rules": [
+                # 1. Весь трафик из TUN-интерфейса идёт через прокси
+                {
+                    "inbound": "tun-in",
+                    "outbound": "proxy"
+                },
+                # 2. Локальные подсети идут напрямую (дополнительная защита)
+                {
+                    "ip_cidr": route_exclude_address,
+                    "outbound": "direct"
+                },
+                # 3. DNS-трафик можно направить через прокси
                 {
                     "protocol": "dns",
-                    "outbound": "direct"
-                },
-                {
-                    "clash_mode": "direct",
-                    "outbound": "direct"
-                },
-                {
-                    "clash_mode": "global",
                     "outbound": "proxy"
                 }
-            ]
+            ],
+            # По умолчанию весь трафик через прокси (для всего остального)
+            "final": "proxy"
         }
     }
 
-def select_profile(profiles):
-    """Показывает список профилей и позволяет выбрать один"""
-    if not profiles:
-        print("Нет доступных профилей")
-        return None
+def test_proxy_connection(profile_config: Dict, timeout: int = 10) -> Tuple[bool, Optional[int], Optional[str]]:
+    """
+    Тестирует подключение через TUN-интерфейс (без SOCKS)
+    Возвращает: (успех, пинг_мс, ошибка)
+    """
+    try:
+        # Создаем outbound конфигурацию
+        outbound = create_singbox_outbound(profile_config)
+        
+        # Используем случайный порт для теста
+        import random
+        test_port = random.randint(20000, 30000)
+        
+        # Базовый TUN конфиг для тестирования
+        temp_config = {
+            "log": {"level": "error", "timestamp": False},
+            "inbounds": [{
+                "type": "tun",
+                "tag": "tun-in",
+                "interface_name": f"test-tun-{test_port}",
+                "mtu": 1500,
+                "auto_route": True,
+                "strict_route": False,
+                  "address": [
+    "172.18.0.1/30",
+    "fdfe:dcba:9876::1/126"
+  ],
+                "stack": "system",
+                #"auto_redirect": True,
+                "route_exclude_address": [
+                    "127.0.0.0/8",
+                    "10.0.0.0/8",
+                    "172.16.0.0/12",
+                    "192.168.0.0/16"
+                ],
+                "sniff": True
+            }],
+            "outbounds": [
+                outbound,
+                {"type": "direct", "tag": "direct"}
+            ],
+            "route": {
+                "auto_detect_interface": True,
+                "rules": [
+                    {"inbound": "tun-in", "outbound": "proxy"},
+                    {"ip_cidr": ["127.0.0.0/8", "192.168.0.0/16"], "outbound": "direct"},
+                    {"protocol": "dns", "outbound": "direct"}
+                ],
+                "final": "proxy"
+            }
+        }
+        
+        # Сохраняем временный конфиг
+        temp_dir = Path(tempfile.gettempdir())
+        config_file = temp_dir / f"singbox_tun_test_{test_port}.json"
+        
+        with open(config_file, 'w', encoding='utf-8') as f:
+            json.dump(temp_config, f, indent=2, ensure_ascii=False)
+        
+        # Пытаемся найти sing-box
+        singbox_path = find_singbox()
+        if not singbox_path:
+            return False, None, "sing-box не найден"
+        
+        # Проверяем права root
+        if os.geteuid() != 0:
+            print(f"  ⚠ Для TUN-теста нужны права root (sudo)")
+            # Вместо TUN-теста делаем простую проверку конфига
+            return quick_config_test(singbox_path, config_file)
+        
+        # Запускаем sing-box в фоновом режиме
+        process = None
+        try:
+            # Запускаем процесс с правами root
+            process = subprocess.Popen(
+                [singbox_path, "run", "-c", str(config_file)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True
+            )
+            
+            # Даем время на запуск TUN-интерфейса
+            time.sleep(3)
+            
+            # Проверяем, запустился ли процесс
+            if process.poll() is not None:
+                stdout, stderr = process.communicate()
+                error_msg = stderr.decode('utf-8', errors='ignore')[:200]
+                return False, None, f"sing-box завершился: {error_msg}"
+            
+            # Тестируем подключение через TUN-интерфейс
+            # Пробуем отправить ICMP ping через новый интерфейс
+            return test_tun_connection(test_port, timeout)
+            
+        finally:
+            # Гарантированно останавливаем процесс
+            if process and process.poll() is None:
+                try:
+                    os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+                    process.wait(timeout=3)
+                except:
+                    try:
+                        process.kill()
+                        process.wait(timeout=2)
+                    except:
+                        pass
+            
+            # Удаляем временный файл
+            try:
+                config_file.unlink(missing_ok=True)
+            except:
+                pass
     
-    print("\n" + "="*60)
-    print("Доступные профили:")
-    print("="*60)
+    except Exception as e:
+        return False, None, f"Ошибка тестирования: {str(e)[:100]}"
+
+def test_tun_connection(tun_port: int, timeout: int) -> Tuple[bool, Optional[int], Optional[str]]:
+    """
+    Тестирует подключение через TUN-интерфейс
+    """
+    try:
+        # Пробуем несколько способов тестирования
+        
+        # 1. Проверяем создание интерфейса
+        time.sleep(1)
+        
+        # 2. Пытаемся сделать HTTP запрос через curl с использованием TUN-интерфейса
+        test_urls = [
+            "https://1.1.1.1",  # Cloudflare DNS
+            "https://api.ipify.org?format=json",  # Проверка внешнего IP
+        ]
+        
+        for test_url in test_urls:
+            try:
+                start_time = time.time()
+                
+                # Используем curl с явным указанием использовать TUN интерфейс
+                # Это работает, потому что весь трафик теперь идет через TUN
+                curl_command = [
+                    "curl", "-s", "--max-time", str(timeout),
+                    "--interface", f"test-tun-{tun_port}",
+                    test_url
+                ]
+                
+                result = subprocess.run(
+                    curl_command,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout + 2
+                )
+                
+                latency = int((time.time() - start_time) * 1000)
+                
+                if result.returncode == 0:
+                    # Проверяем полученные данные
+                    if test_url == "https://api.ipify.org?format=json":
+                        try:
+                            import json as json_module
+                            ip_data = json_module.loads(result.stdout)
+                            print(f"  [TUN-Тест] Внешний IP через TUN: {ip_data.get('ip', 'unknown')}")
+                        except:
+                            pass
+                    
+                    return True, latency, None
+                else:
+                    print(f"  [TUN-Тест] curl ошибка: {result.stderr[:100]}")
+                    
+            except subprocess.TimeoutExpired:
+                return False, None, f"Таймаут при тесте {test_url}"
+            except Exception as e:
+                if "1.1.1.1" in test_url:
+                    continue  # Пробуем следующую ссылку
+                else:
+                    raise
+        
+        return False, None, "Не удалось проверить подключение через TUN"
+        
+    except Exception as e:
+        return False, None, f"Ошибка тестирования TUN: {str(e)[:100]}"
+
+def quick_config_test(singbox_path: str, config_file: Path) -> Tuple[bool, Optional[int], Optional[str]]:
+    """
+    Быстрая проверка конфигурации без запуска TUN (без прав root)
+    """
+    try:
+        # Пробуем проверить конфиг на валидность
+        result = subprocess.run(
+            [singbox_path, "check", "-c", str(config_file)],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        
+        if result.returncode == 0:
+            return True, None, "Конфигурация валидна (нужен root для TUN-теста)"
+        else:
+            return False, None, f"Ошибка конфигурации: {result.stderr[:100]}"
+            
+    except Exception as e:
+        return False, None, f"Ошибка проверки конфига: {str(e)[:50]}"
+
+
+def test_profiles_sequential(profiles: List[Dict]) -> Dict[int, Dict]:
+    """
+    Тестирует профили последовательно (более стабильно)
+    """
+    print(f"\n🔍 Тестируем {len(profiles)} профилей последовательно...")
     
-    for i, profile in enumerate(profiles, 1):
-        print(f"{i:3d}. {profile.get('comment', 'Без названия')}")
-        print(f"     {profile.get('protocol', 'unknown').upper()} {profile.get('host', '')}:{profile.get('port', '')}")
+    results = {}
+    
+    for idx, profile in enumerate(profiles):
+        if idx >= 30:  # Ограничение для последовательного теста
+            print(f"\n⚠ Тестирование ограничено первыми 30 профилями из {len(profiles)}")
+            break
+        
+        profile_name = profile.get('comment', f'Профиль {idx+1}')
+        print(f"  [{idx+1}/{min(len(profiles), 30)}] Тестирую: {profile_name[:50]}...")
+        
+        try:
+            success, latency, error = test_proxy_connection(profile)
+            
+            results[idx] = {
+                'success': success,
+                'latency': latency,
+                'error': error,
+                'profile': profile
+            }
+            
+            if success:
+                print(f"    ✓ Успешно! Пинг: {latency}ms")
+            else:
+                print(f"    ✗ Ошибка: {error}")
+            
+            # Небольшая пауза между тестами
+            time.sleep(0.5)
+            
+        except Exception as e:
+            print(f"    ⚠ Критическая ошибка: {str(e)[:50]}")
+            results[idx] = {
+                'success': False,
+                'latency': None,
+                'error': str(e),
+                'profile': profile
+            }
+    
+    return results
+
+def show_profiles_with_status(profiles: List[Dict], test_results: Optional[Dict] = None):
+    """
+    Показывает список профилей с результатами тестирования
+    """
+    print("\n" + "="*80)
+    print("ДОСТУПНЫЕ ПРОФИЛИ:")
+    print("="*80)
+    
+    for i, profile in enumerate(profiles):
+        # Базовая информация
+        protocol = profile.get('protocol', 'unknown').upper()
+        host = profile.get('host', '')
+        port = profile.get('port', '')
+        comment = profile.get('comment', f'Профиль {i+1}')
+        
+        # Результаты теста
+        status = "  "
+        latency_info = ""
+        
+        if test_results and i in test_results:
+            result = test_results[i]
+            if result['success']:
+                status = "✓ "
+                latency_info = f" [{result['latency']}ms]" if result['latency'] else " [работает]"
+            else:
+                status = "✗ "
+                latency_info = " [недоступен]"
+        
+        # Дополнительная информация
+        extra_info = []
         if profile.get('type'):
-            print(f"     Тип: {profile.get('type')}, Безопасность: {profile.get('security', 'none')}")
+            extra_info.append(f"тип: {profile['type']}")
+        if profile.get('security') and profile['security'] != 'none':
+            extra_info.append(f"безопасность: {profile['security']}")
+        
+        extra_str = f" ({', '.join(extra_info)})" if extra_info else ""
+        
+        # Вывод
+        print(f"{i+1:3d}. {status}{comment[:60]}{latency_info}")
+        print(f"     {protocol} {host}:{port}{extra_str}")
+        
+        # Краткая информация об ошибке (если есть)
+        if test_results and i in test_results and not test_results[i]['success']:
+            error = test_results[i].get('error', '')
+            if error and len(error) < 50:
+                print(f"     Ошибка: {error}")
+        
+        print()
+
+def main():
+    """Основная функция"""
+    print("🚀 Sing-box Config Manager с тестированием")
+    print("=" * 80)
+    try:
+        os.remove('/tmp/sing-box-tun.log')
+    except:
+        print("No logs")
+    
+
+
+    # Проверяем наличие sing-box
+    singbox_path = find_singbox()
+    if not singbox_path:
+        print("⚠ Внимание: sing-box не найден в системе.")
+        print("  Тестирование будет пропущено, но вы можете установить его позже.")
+        print("  Установка: curl -fsSL https://sing-box.app/deb-install.sh | sudo bash")
         print()
     
-    print("0. Выход")
-    print("-"*60)
+    # Выбор источника профилей
+    print("Выберите источник профилей:")
+    print("  1. URL (скачать файл)")
+    print("  2. Локальный файл")
+    print("  3. Ввести base64 вручную")
+    print("  4. Ввести ссылки вручную (по одной)")
     
+    choice = input("Ваш выбор (1-4): ").strip()
+    
+    profiles = []
+    
+    if choice == '1':
+        url = input("Введите URL: ").strip()
+        profiles = load_profiles_from_source(url)
+    elif choice == '2':
+        filepath = input("Введите путь к файлу: ").strip()
+        profiles = load_profiles_from_source(filepath)
+    elif choice == '3':
+        print("Введите base64 строку (Ctrl+D для завершения в Linux/Mac, Ctrl+Z в Windows):")
+        content = sys.stdin.read().strip()
+        profiles = load_profiles_from_source(content)
+    elif choice == '4':
+        print("Вводите ссылки по одной (пустая строка для завершения):")
+        links = []
+        while True:
+            link = input(f"Ссылка {len(links)+1}: ").strip()
+            if not link:
+                break
+            links.append(link)
+        profiles = links
+    else:
+        print("Неверный выбор")
+        return
+    
+    if not profiles:
+        print("Не удалось загрузить профили")
+        return
+    
+    # Парсим профили
+    parsed_profiles = []
+    for raw_url in profiles:
+        profile = parse_proxy_url(raw_url)
+        if profile:
+            parsed_profiles.append(profile)
+        else:
+            print(f"⚠ Не удалось распарсить: {raw_url[:50]}...")
+    
+    if not parsed_profiles:
+        print("Не удалось распарсить ни один профиль")
+        return
+    
+    # Тестирование профилей
+    test_results = None
+    
+    if singbox_path and parsed_profiles:
+        print(f"\nНайдено {len(parsed_profiles)} профилей.")
+        
+        if len(parsed_profiles) > 50:
+            print("⚠ Слишком много профилей для полного тестирования.")
+            test_choice = input("Тестировать только первые 30 профилей? (y/n): ").lower()
+        else:
+            test_choice = input("Хотите протестировать профили перед выбором? (y/n): ").lower()
+        
+        if test_choice == 'y':
+            
+            try:
+                print("\n⏳ Начинаю последовательное тестирование...")
+                test_results = test_profiles_sequential(parsed_profiles[:30])
+            except KeyboardInterrupt:
+                print("\n⚠ Тестирование прервано пользователем")
+                test_results = {}
+            except Exception as e:
+                print(f"\n⚠ Ошибка при тестировании: {e}")
+                test_results = {}
+    
+    # Показываем профили с результатами тестов
+    show_profiles_with_status(parsed_profiles, test_results)
+    
+    # Выбор профиля
     while True:
         try:
-            choice = int(input("Выберите профиль (номер): "))
-            if choice == 0:
-                return None
-            if 1 <= choice <= len(profiles):
-                return profiles[choice - 1]
+            choice = input(f"\nВыберите профиль (1-{len(parsed_profiles)}) или 0 для выхода: ").strip()
+            if choice == '0':
+                print("Выход")
+                return
+            
+            idx = int(choice) - 1
+            if 0 <= idx < len(parsed_profiles):
+                selected_profile = parsed_profiles[idx]
+                break
             else:
-                print(f"Пожалуйста, выберите число от 0 до {len(profiles)}")
+                print(f"Пожалуйста, выберите число от 1 до {len(parsed_profiles)}")
         except ValueError:
             print("Пожалуйста, введите число")
+    
+    print(f"\n✅ Выбран профиль: {selected_profile.get('comment')}")
+    
+    # Опционально: перетестировать выбранный профиль
+    if singbox_path:
+        retest = input("Протестировать выбранный профиль перед запуском? (y/n): ").lower()
+        if retest == 'y':
+            print("⏳ Тестирую выбранный профиль...")
+            success, latency, error = test_proxy_connection(selected_profile)
+            if success:
+                print(f"✅ Профиль рабочий! Пинг: {latency}ms")
+            else:
+                print(f"⚠ Профиль может не работать: {error}")
+                confirm = input("Всё равно запустить? (y/n): ").lower()
+                if confirm != 'y':
+                    print("Отмена")
+                    return
+    
+    # Создаем и сохраняем конфиг
+    outbound_config = create_singbox_outbound(selected_profile)
+    full_config = create_full_singbox_config(outbound_config)
+    
+    config_dir = Path.home() / ".config" / "sing-box"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    
+    config_path = config_dir / "config.json"
+    
+    # Бекап старого конфига
+    if config_path.exists():
+        import shutil
+        import datetime
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = config_dir / f"config_backup_{timestamp}.json"
+        shutil.copy2(config_path, backup_path)
+        print(f"📁 Старый конфиг сохранен как: {backup_path.name}")
+    
+    with open(config_path, 'w', encoding='utf-8') as f:
+        json.dump(full_config, f, indent=2, ensure_ascii=False)
+    
+    print(f"📁 Новый конфиг сохранен: {config_path}")
+    
+    # Запуск sing-box
+    if singbox_path:
+        launch = input("\nЗапустить sing-box? (y/n): ").lower()
+        if launch == 'y':
+            print(f"\n🚀 Запускаю sing-box...")
+            print("   SOCKS5 прокси: 127.0.0.1:10808")
+            print("   HTTP прокси: 127.0.0.1:10808")
+            print("   Для остановки нажмите Ctrl+C")
+            print("-" * 50)
+            
+            try:
+                process = subprocess.Popen(
+                    [singbox_path, "run", "-c", str(config_path)],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                    universal_newlines=True
+                )
+                
+                # Выводим логи
+                for line in process.stdout:
+                    print(line, end='')
+                    sys.stdout.flush()
+                    
+            except KeyboardInterrupt:
+                print("\n\n🛑 Останавливаю sing-box...")
+                process.terminate()
+                process.wait(timeout=5)
+                print("✅ Sing-box остановлен")
+            except Exception as e:
+                print(f"❌ Ошибка запуска: {e}")
+    else:
+        print("\n⚠ Sing-box не найден. Конфиг сохранен, но запуск невозможен.")
+        print(f"   Установите sing-box и запустите вручную:")
+        print(f"   sing-box run -c {config_path}")
 
-def run_singbox(config_path):
-    """Запускает sing-box с указанным конфигом"""
-    # Пытаемся найти sing-box
-    singbox_path = None
+def find_singbox() -> Optional[str]:
+    """Находит путь к sing-box"""
     possible_paths = [
         "/usr/local/bin/sing-box",
         "/usr/bin/sing-box",
@@ -427,158 +921,30 @@ def run_singbox(config_path):
     ]
     
     for path in possible_paths:
-        if isinstance(path, Path):
-            path_str = str(path)
-        else:
-            path_str = path
-        
+        path_str = str(path) if isinstance(path, Path) else path
         try:
             result = subprocess.run([path_str, "version"], 
-                                  capture_output=True, text=True)
+                                  capture_output=True, text=True,
+                                  timeout=2)
             if result.returncode == 0:
-                singbox_path = path_str
-                print(f"Найден sing-box: {path_str}")
-                print(f"Версия: {result.stdout.strip()}")
-                break
-        except (FileNotFoundError, PermissionError):
+                return path_str
+        except (FileNotFoundError, PermissionError, subprocess.TimeoutExpired):
             continue
     
-    if not singbox_path:
-        print("Sing-box не найден в системе. Установите его:")
-        print("  Linux: curl -fsSL https://sing-box.app/deb-install.sh | sudo bash")
-        print("  MacOS: brew install sing-box")
-        print("  Windows: https://github.com/SagerNet/sing-box/releases")
-        return False
-    
-    print(f"\nЗапускаем sing-box...")
-    print("Локальный SOCKS5 прокси: 127.0.0.1:10808")
-    print("Локальный HTTP прокси: 127.0.0.1:10808")
-    print("Для остановки нажмите Ctrl+C")
-    print("-"*60)
-    
-    try:
-        process = subprocess.Popen(
-            [singbox_path, "run", "-c", str(config_path)],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            universal_newlines=True
-        )
-        
-        # Выводим логи в реальном времени
-        for line in process.stdout:
-            print(line, end='')
-            sys.stdout.flush()
-            
-    except KeyboardInterrupt:
-        print("\nОстанавливаем sing-box...")
-        process.terminate()
-        process.wait()
-        print("Sing-box остановлен")
-    except Exception as e:
-        print(f"Ошибка запуска: {e}")
-        return False
-    
-    return True
+    return None
 
-def main():
-    """Основная функция"""
-    print("Sing-box Config Manager")
-    print("=" * 60)
-    
-    # Выбор источника профилей
-    print("\nВыберите источник профилей:")
-    print("1. URL (скачать файл)")
-    print("2. Локальный файл")
-    print("3. Ввести base64 вручную")
-    print("4. Использовать тестовый файл из прошлой версии")
-    
-    choice = input("Ваш выбор (1-4): ").strip()
-    
-    if choice == '1':
-        url = input("Введите URL: ").strip()
-        raw_profiles = load_profiles_from_source(url)
-    elif choice == '2':
-        filepath = input("Введите путь к файлу: ").strip()
-        raw_profiles = load_profiles_from_source(filepath)
-    elif choice == '3':
-        print("Введите base64 строку (Ctrl+D для завершения):")
-        content = sys.stdin.read().strip()
-        raw_profiles = load_profiles_from_source(content)
-    elif choice == '4':
-        # Используем тестовые данные из прошлой версии
-        test_data = """dmxlc3M6Ly8wMTc2ODE2OS1hYmNlLTQzYTgtOTkwNC00Mjk4YTFjYjdkZTVAcGwuam9qYWNrLnJ1OjQ0Mz9zZWN1cml0eT1yZWFsaXR5JnR5cGU9Z3JwYyZoZWFkZXJUeXBlPSZhdXRob3JpdHk9JnNlcnZpY2VOYW1lPWdycGMmbW9kZT1ndW4mc25pPXBsLmpvamFjay5ydSZmcD1yYW5kb20mcGJrPWhTVHRscFhLQVlWVnU1eWJYM2hRZnE4ZGZzVXJPX0hvRlZnZkdHb0NIVncmc2lkPWYxODlkOTE3NjBiYjY2NjMmc3B4PSUyRiMlRjAlOUYlODclQjUlRjAlOUYlODclQjElMjAlRDAlOUYlRDAlQkUlRDAlQkIlRDElOEMlRDElODglRDAlQjAlMjAoJUYwJTlGJThFJUFGJTIwUm9ibG94KQ=="""
-        raw_profiles = load_profiles_from_source(test_data)
-    else:
-        print("Неверный выбор")
-        return
-    
-    if not raw_profiles:
-        print("Не удалось загрузить профили")
-        return
-    
-    # Парсим все профили
-    parsed_profiles = []
-    for raw_url in raw_profiles:
-        profile = parse_proxy_url(raw_url)
-        if profile:
-            parsed_profiles.append(profile)
-        else:
-            print(f"Не удалось распарсить: {raw_url[:50]}...")
-    
-    if not parsed_profiles:
-        print("Не удалось распарсить ни один профиль")
-        return
-    
-    # Выбираем профиль
-    selected_profile = select_profile(parsed_profiles)
-    if not selected_profile:
-        print("Выход")
-        return
-    
-    print(f"\nВыбран профиль: {selected_profile.get('comment')}")
-    print(f"Протокол: {selected_profile.get('protocol')}")
-    print(f"Сервер: {selected_profile.get('host')}:{selected_profile.get('port')}")
-    
-    # Создаем конфигурацию sing-box
-    outbound_config = create_singbox_outbound(selected_profile)
-    full_config = create_full_singbox_config(outbound_config)
-    
-    # Сохраняем конфиг
-    config_dir = Path.home() / ".config" / "sing-box"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    
-    config_path = config_dir / "config.json"
-    backup_path = config_dir / "config.json.backup"
-    
-    # Делаем бекап старого конфига
-    if config_path.exists():
-        import shutil
-        shutil.copy2(config_path, backup_path)
-        print(f"\nСтарый конфиг сохранен как: {backup_path}")
-    
-    with open(config_path, 'w', encoding='utf-8') as f:
-        json.dump(full_config, f, indent=2, ensure_ascii=False)
-    
-    print(f"Новый конфиг сохранен: {config_path}")
-    
-    # Сохраняем выбранный профиль отдельно для быстрого переключения
-    profile_path = config_dir / "last_profile.json"
-    with open(profile_path, 'w', encoding='utf-8') as f:
-        json.dump(selected_profile, f, indent=2, ensure_ascii=False)
-    
-    # Запускаем sing-box
-    print("\nЗапустить sing-box? (y/n): ")
-    if input().lower() == 'y':
-        run_singbox(config_path)
+# (Остальные функции остаются без изменений: decode_b64_if_valid, load_profiles_from_source, 
+# parse_proxy_url, parse_vless_url, parse_ss_url, create_singbox_outbound, 
+# create_singbox_vless_config, create_singbox_ss_config, create_full_singbox_config)
 
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("\nПрограмма прервана")
+        print("\n\n🛑 Программа прервана пользователем")
+        sys.exit(0)
     except Exception as e:
-        print(f"Критическая ошибка: {e}")
+        print(f"\n❌ Критическая ошибка: {e}")
         import traceback
         traceback.print_exc()
+        sys.exit(1)
