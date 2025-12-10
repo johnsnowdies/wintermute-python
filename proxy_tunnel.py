@@ -32,70 +32,60 @@ import atexit
 # Отключаем предупреждения о неверифицированных сертификатах
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-def create_tproxy_config(outbound_config: Dict, tproxy_port: int = 12345) -> Dict:
+def setup_iptables_rules(interface: str, tun_interface: str = "throne-tun", tun_subnet: str = "172.18.0.0/30"):
     """
-    Создает конфигурацию sing-box с tproxy inbound
-    """
-    return {
-        "log": {
-            "level": "info",
-            "timestamp": True
-        },
-        "inbounds": [
-            {
-                "type": "tproxy",
-                "tag": "tproxy-in",
-                "listen": "0.0.0.0",
-                "listen_port": tproxy_port,
-                "sniff": True,
-                "sniff_override_destination": True,
-                "proxy_protocol": False
-            }
-        ],
-        "outbounds": [
-            outbound_config,
-            {"type": "direct", "tag": "direct"}
-        ],
-        "route": {
-            "auto_detect_interface": True,
-            "rules": [
-                # Весь tproxy-трафик через прокси
-                {"inbound": "tproxy-in", "outbound": "proxy"},
-                # Локальные сети напрямую
-                {"ip_cidr": ["127.0.0.0/8", "192.168.0.0/16", "10.0.0.0/8"], "outbound": "direct"},
-                # DNS через прокси
-                {"protocol": "dns", "outbound": "proxy"}
-            ],
-            "final": "proxy"
-        }
-    }
-
-def setup_iptables_rules(interface: str, tproxy_port: int = 12345):
-    """
-    Настраивает iptables правила для перехвата трафика с интерфейса
+    Настраивает iptables правила для маршрутизации трафика с интерфейса в TUN-туннель
     """
     rules = []
     
-    # Включаем форвардинг
+    # Включаем форвардинг (если нужно маршрутизировать между интерфейсами)
     subprocess.run(["sysctl", "-w", "net.ipv4.ip_forward=1"], check=False)
     
-    # Маркировка и перенаправление через tproxy
+    # 1. ИСКЛЮЧАЕМ локальный трафик из маркировки
+    # Не маркируем трафик в локальную сеть
+    rules.append(f"iptables -t mangle -A PREROUTING -i {interface} -d 192.168.50.0/24 -j RETURN")
+    # Не маркируем multicast/broadcast
+    rules.append(f"iptables -t mangle -A PREROUTING -i {interface} -d 224.0.0.0/4 -j RETURN")
+    rules.append(f"iptables -t mangle -A PREROUTING -i {interface} -d 255.255.255.255 -j RETURN")
+    
+    # 2. Маркируем ВЕСЬ остальной трафик с интерфейса (кроме исключений выше)
     # TCP трафик
-    tcp_rule = f"iptables -t mangle -A PREROUTING -i {interface} -p tcp -j TPROXY --on-port {tproxy_port} --tproxy-mark 0x1/0x1"
+    tcp_rule = f"iptables -t mangle -A PREROUTING -i {interface} -p tcp -j MARK --set-mark 0x2"
     rules.append(tcp_rule)
     
     # UDP трафик
-    udp_rule = f"iptables -t mangle -A PREROUTING -i {interface} -p udp -j TPROXY --on-port {tproxy_port} --tproxy-mark 0x1/0x1"
+    udp_rule = f"iptables -t mangle -A PREROUTING -i {interface} -p udp -j MARK --set-mark 0x2"
     rules.append(udp_rule)
     
-    # Создаем отдельную таблицу маршрутизации для маркированных пакетов
-    routing_table = "100 throne_tproxy"
-    with open("/etc/iproute2/rt_tables", "a") as f:
-        f.write(f"\n{routing_table}\n")
+    # ICMP трафик (если нужно)
+    icmp_rule = f"iptables -t mangle -A PREROUTING -i {interface} -p icmp -j MARK --set-mark 0x2"
+    rules.append(icmp_rule)
     
-    # Правило для маркированных пакетов
-    rules.append("ip rule add fwmark 0x1 lookup throne_tproxy")
-    rules.append("ip route add local 0.0.0.0/0 dev lo table throne_tproxy")
+    # 3. Создаем отдельную таблицу маршрутизации для маркированных пакетов
+    routing_table = "200 throne_tun_routing"
+    try:
+        with open("/etc/iproute2/rt_tables", "a") as f:
+            f.write(f"\n200 throne_tun_routing\n")
+    except Exception as e:
+        print(f"  Warning: Could not add to rt_tables: {e}")
+    
+    # 4. Добавляем правило для маркированных пакетов (маркер 0x2)
+    # Пакеты с маркером 0x2 будут использовать таблицу 200
+    rules.append("ip rule add fwmark 0x2 table throne_tun_routing")
+    
+    # 5. Настраиваем маршруты в таблице throne_tun_routing:
+    # - TUN подсеть через TUN интерфейс
+    # - Весь остальной трафик через TUN интерфейс
+    rules.append(f"ip route add {tun_subnet} dev {tun_interface} table throne_tun_routing")
+    rules.append(f"ip route add default dev {tun_interface} table throne_tun_routing")
+    
+    # 6. Добавляем NAT (маскарадинг) для трафика из TUN
+    # Это нужно, чтобы ответный трафик мог вернуться
+    rules.append(f"iptables -t nat -A POSTROUTING -o {tun_interface} -j MASQUERADE")
+    
+    # 7. Разрешаем форвардинг между интерфейсами
+    rules.append(f"iptables -A FORWARD -i {interface} -o {tun_interface} -j ACCEPT")
+    rules.append(f"iptables -A FORWARD -i {tun_interface} -o {interface} -m state --state RELATED,ESTABLISHED -j ACCEPT")
     
     # Применяем все правила
     for rule in rules:
@@ -106,10 +96,11 @@ def setup_iptables_rules(interface: str, tproxy_port: int = 12345):
 
 def cleanup_iptables_rules(rules):
     """
-    Очищает примененные правила iptables
+    Очищает примененные правила iptables и iproute2
     """
-    print("\n🧹 Cleaning up iptables rules...")
+    print("\n🧹 Cleaning up iptables and routing rules...")
     
+    # Удаляем правила в обратном порядке
     for rule in reversed(rules):
         # Преобразуем правило ADD в DELETE
         if " -A " in rule:
@@ -118,7 +109,10 @@ def cleanup_iptables_rules(rules):
             subprocess.run(delete_rule.split(), check=False)
     
     # Удаляем правило маршрутизации
-    subprocess.run(["ip", "rule", "del", "fwmark", "0x1", "table", "throne_tproxy"], check=False)
+    subprocess.run(["ip", "rule", "del", "fwmark", "0x2", "table", "throne_tun_routing"], check=False)
+    
+    # Удаляем таблицу маршрутизации (очищаем маршруты)
+    subprocess.run(["ip", "route", "flush", "table", "throne_tun_routing"], check=False)
 
 
 def decode_b64_if_valid(s):
@@ -443,75 +437,56 @@ def create_singbox_ss_config(config):
         "password": config['password']
     }
 
-def create_full_singbox_config(outbound_config: Dict) -> Dict:
+def create_tun_only_config(outbound_config: Dict) -> Dict:
     """
-    Создает конфигурацию sing-box TUN-режима для Linux.
-    Аналогично коду Throne, но только для TUN (без mixed-inbound).
+    Создает конфигурацию только для TUN-режима
     """
     
-    # Исключаемые подсети (локальный трафик не должен идти через туннель)
-    route_exclude_address = [
-        "127.0.0.0/8",     # localhost
-        "224.0.0.0/4",     # multicast
-        "255.255.255.255/32",  # broadcast
-    ]
-    
-    # Конфигурация TUN-интерфейса (основная часть)
+    # Ключевые настройки для TUN
     tun_config = {
         "type": "tun",
         "tag": "tun-in",
-        "interface_name": "throne-tun",  # или можно генерировать динамически
-        "mtu": 9000,                     # стандартный MTU
-        "auto_route": True,              # КЛЮЧЕВОЙ ПАРАМЕТР: sing-box сам настроит маршруты
-        "strict_route": False,           # обычно false для совместимости
-        "stack": "system",               # или "gvisor" для Linux
-        
+        "interface_name": "throne-tun",
+        "mtu": 1500,  # Стандартный MTU
+        "auto_route": True,  # ВАЖНО: sing-box сам настроит маршруты для локальной машины
+        "strict_route": False,
         "address": [
             "172.18.0.1/30",
-            "fdfe:dcba:9876::1/126"
+            "fdfe:dcba:9876::1/126",
         ],
-        "route_exclude_address": route_exclude_address,  # исключаемые подсети
-        "sniff": True,                   # определение протоколов
+        "stack": "system",
+        "sniff": True,
+        # Исключаем локальные сети
+        "route_exclude_address": [
+            "127.0.0.0/8",
+            "192.168.50.0/24",  # Ваша локальная сеть
+            "224.0.0.0/4",
+            "255.255.255.255/32"
+        ]
     }
     
-    # Полная конфигурация для sing-box
     return {
         "log": {
             "level": "info",
-            "timestamp": True,
-            "output": "/tmp/sing-box-tun.log"  # удобно для отладки
+            "timestamp": True
         },
-        "inbounds": [tun_config],  # ТОЛЬКО TUN, никаких mixed/socks
-        
+        "inbounds": [tun_config],
         "outbounds": [
-            outbound_config,  # ваш прокси (VLESS/Shadowsocks)
-            {
-                "type": "direct",
-                "tag": "direct"
-            }
+            outbound_config,
+            {"type": "direct", "tag": "direct"}
         ],
-        
         "route": {
             "auto_detect_interface": True,
-            # Правила маршрутизации
             "rules": [
-                # 1. Весь трафик из TUN-интерфейса идёт через прокси
-                {
-                    "inbound": "tun-in",
-                    "outbound": "proxy"
-                },
-                # 2. Локальные подсети идут напрямую (дополнительная защита)
-                {
-                    "ip_cidr": route_exclude_address,
-                    "outbound": "direct"
-                },
-                # 3. DNS-трафик можно направить через прокси
-                {
-                    "protocol": "dns",
-                    "outbound": "proxy"
-                }
+                # Весь TUN трафик через прокси
+                {"inbound": "tun-in", "outbound": "proxy"},
+                # Локальные сети напрямую
+                {"ip_cidr": ["127.0.0.0/8", "192.168.50.0/24"], "outbound": "direct"},
+                # TUN подсеть напрямую
+                {"ip_cidr": ["172.18.0.0/30"], "outbound": "direct"},
+                # DNS через прокси (опционально)
+                {"protocol": "dns", "outbound": "proxy"}
             ],
-            # По умолчанию весь трафик через прокси (для всего остального)
             "final": "proxy"
         }
     }
@@ -540,9 +515,9 @@ def test_proxy_connection(profile_config: Dict, timeout: int = 10) -> Tuple[bool
                 "auto_route": True,
                 "strict_route": False,
                   "address": [
-    "172.18.0.1/30",
-    "fdfe:dcba:9876::1/126"
-  ],
+                    "172.18.0.1/30",
+                    "fdfe:dcba:9876::1/126"
+                  ],
                 "stack": "system",
                 #"auto_redirect": True,
                 "route_exclude_address": [
@@ -717,7 +692,6 @@ def quick_config_test(singbox_path: str, config_file: Path) -> Tuple[bool, Optio
             
     except Exception as e:
         return False, None, f"Ошибка проверки конфига: {str(e)[:50]}"
-
 
 def test_profiles_sequential(profiles: List[Dict]) -> Dict[int, Dict]:
     """
@@ -928,7 +902,7 @@ def main():
     if args.interface:
         # Режим tproxy с перехватом трафика с интерфейса
         print(f"🎯 Настраиваю перехват трафика с интерфейса {args.interface}")
-        full_config = create_tproxy_config(outbound_config, args.tproxy_port)
+        full_config = create_tun_only_config(outbound_config)
     else:
         # Обычный TUN режим
         full_config = create_full_singbox_config(outbound_config)
@@ -960,7 +934,7 @@ def main():
     iptables_rules = []
     if args.interface:
         print(f"📡 Настраиваю iptables правила для интерфейса {args.interface}...")
-        iptables_rules = setup_iptables_rules(args.interface, args.tproxy_port)
+        iptables_rules = setup_iptables_rules(args.interface)
     
     # Запуск sing-box
     if singbox_path:
