@@ -21,9 +21,104 @@ import signal
 import tempfile
 from typing import Dict, List, Optional, Tuple
 import urllib3
+import json
+import argparse
+import subprocess
+import sys
+from pathlib import Path
+import tempfile
+import atexit
 
 # Отключаем предупреждения о неверифицированных сертификатах
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+def create_tproxy_config(outbound_config: Dict, tproxy_port: int = 12345) -> Dict:
+    """
+    Создает конфигурацию sing-box с tproxy inbound
+    """
+    return {
+        "log": {
+            "level": "info",
+            "timestamp": True
+        },
+        "inbounds": [
+            {
+                "type": "tproxy",
+                "tag": "tproxy-in",
+                "listen": "0.0.0.0",
+                "listen_port": tproxy_port,
+                "sniff": True,
+                "sniff_override_destination": True,
+                "proxy_protocol": False
+            }
+        ],
+        "outbounds": [
+            outbound_config,
+            {"type": "direct", "tag": "direct"}
+        ],
+        "route": {
+            "auto_detect_interface": True,
+            "rules": [
+                # Весь tproxy-трафик через прокси
+                {"inbound": "tproxy-in", "outbound": "proxy"},
+                # Локальные сети напрямую
+                {"ip_cidr": ["127.0.0.0/8", "192.168.0.0/16", "10.0.0.0/8"], "outbound": "direct"},
+                # DNS через прокси
+                {"protocol": "dns", "outbound": "proxy"}
+            ],
+            "final": "proxy"
+        }
+    }
+
+def setup_iptables_rules(interface: str, tproxy_port: int = 12345):
+    """
+    Настраивает iptables правила для перехвата трафика с интерфейса
+    """
+    rules = []
+    
+    # Включаем форвардинг
+    subprocess.run(["sysctl", "-w", "net.ipv4.ip_forward=1"], check=False)
+    
+    # Маркировка и перенаправление через tproxy
+    # TCP трафик
+    tcp_rule = f"iptables -t mangle -A PREROUTING -i {interface} -p tcp -j TPROXY --on-port {tproxy_port} --tproxy-mark 0x1/0x1"
+    rules.append(tcp_rule)
+    
+    # UDP трафик
+    udp_rule = f"iptables -t mangle -A PREROUTING -i {interface} -p udp -j TPROXY --on-port {tproxy_port} --tproxy-mark 0x1/0x1"
+    rules.append(udp_rule)
+    
+    # Создаем отдельную таблицу маршрутизации для маркированных пакетов
+    routing_table = "100 throne_tproxy"
+    with open("/etc/iproute2/rt_tables", "a") as f:
+        f.write(f"\n{routing_table}\n")
+    
+    # Правило для маркированных пакетов
+    rules.append("ip rule add fwmark 0x1 lookup throne_tproxy")
+    rules.append("ip route add local 0.0.0.0/0 dev lo table throne_tproxy")
+    
+    # Применяем все правила
+    for rule in rules:
+        print(f"  Applying: {rule}")
+        subprocess.run(rule.split(), check=False)
+    
+    return rules
+
+def cleanup_iptables_rules(rules):
+    """
+    Очищает примененные правила iptables
+    """
+    print("\n🧹 Cleaning up iptables rules...")
+    
+    for rule in reversed(rules):
+        # Преобразуем правило ADD в DELETE
+        if " -A " in rule:
+            delete_rule = rule.replace(" -A ", " -D ")
+            print(f"  Removing: {delete_rule}")
+            subprocess.run(delete_rule.split(), check=False)
+    
+    # Удаляем правило маршрутизации
+    subprocess.run(["ip", "rule", "del", "fwmark", "0x1", "table", "throne_tproxy"], check=False)
 
 
 def decode_b64_if_valid(s):
@@ -88,7 +183,6 @@ def load_profiles_from_source(source=None):
     
     for line in raw_lines:
         line = line.strip()
-        print(line)
         if line and not line.startswith('#') and "%D0%9E%D0%B1%D1%85%D0%BE%D0%B4" in line:
             profiles.append(line)
     
@@ -720,57 +814,53 @@ def show_profiles_with_status(profiles: List[Dict], test_results: Optional[Dict]
         print()
 
 def main():
-    """Основная функция"""
-    print("🚀 Sing-box Config Manager с тестированием")
-    print("=" * 80)
     try:
         os.remove('/tmp/sing-box-tun.log')
     except:
-        print("No logs")
+        print('no log file')
+    """Основная функция с поддержкой аргументов командной строки"""
+    parser = argparse.ArgumentParser(description="Sing-box Proxy Manager с поддержкой TUN и tproxy")
+    parser.add_argument('-I', '--interface', help='Интерфейс для перехвата трафика (например, enp1s0)')
+    parser.add_argument('-p', '--tproxy-port', type=int, default=12345, help='Порт для tproxy (по умолчанию: 12345)')
+    parser.add_argument('--no-test', action='store_true', help='Пропустить тестирование профилей')
+    parser.add_argument('--profile-url', help='URL для загрузки профилей')
+    parser.add_argument('--config', help='Путь к готовому конфигу (пропустить выбор профиля)')
     
-
-
+    args = parser.parse_args()
+    
+    print("🚀 Sing-box Proxy Manager с поддержкой tproxy")
+    print("=" * 80)
+    
     # Проверяем наличие sing-box
     singbox_path = find_singbox()
     if not singbox_path:
         print("⚠ Внимание: sing-box не найден в системе.")
-        print("  Тестирование будет пропущено, но вы можете установить его позже.")
-        print("  Установка: curl -fsSL https://sing-box.app/deb-install.sh | sudo bash")
+        print("  Установите: curl -fsSL https://sing-box.app/deb-install.sh | sudo bash")
         print()
     
-    # Выбор источника профилей
-    print("Выберите источник профилей:")
-    print("  1. URL (скачать файл)")
-    print("  2. Локальный файл")
-    print("  3. Ввести base64 вручную")
-    print("  4. Ввести ссылки вручную (по одной)")
-    
-    choice = input("Ваш выбор (1-4): ").strip()
-    
-    profiles = []
-    
-    if choice == '1':
-        url = input("Введите URL: ").strip()
-        profiles = load_profiles_from_source(url)
-    elif choice == '2':
-        filepath = input("Введите путь к файлу: ").strip()
-        profiles = load_profiles_from_source(filepath)
-    elif choice == '3':
-        print("Введите base64 строку (Ctrl+D для завершения в Linux/Mac, Ctrl+Z в Windows):")
-        content = sys.stdin.read().strip()
-        profiles = load_profiles_from_source(content)
-    elif choice == '4':
-        print("Вводите ссылки по одной (пустая строка для завершения):")
-        links = []
-        while True:
-            link = input(f"Ссылка {len(links)+1}: ").strip()
-            if not link:
-                break
-            links.append(link)
-        profiles = links
-    else:
-        print("Неверный выбор")
+    # Если указан готовый конфиг, используем его
+    if args.config:
+        print(f"📁 Использую готовый конфиг: {args.config}")
+        config_path = Path(args.config)
+        if not config_path.exists():
+            print(f"❌ Файл конфига не найден: {args.config}")
+            return
+        
+        # Запускаем с tproxy правилами, если указан интерфейс
+        if args.interface:
+            setup_tproxy_for_config(args.interface, args.tproxy_port, str(config_path))
+        
+        # Запускаем sing-box
+        launch_singbox(singbox_path, config_path, args.interface)
         return
+    
+    # Загрузка профилей
+    profiles = []
+    if args.profile_url:
+        profiles = load_profiles_from_source(args.profile_url)
+    else:
+        # Интерактивный выбор источника (как раньше)
+        profiles = interactive_load_profiles()
     
     if not profiles:
         print("Не удалось загрузить профили")
@@ -789,28 +879,24 @@ def main():
         print("Не удалось распарсить ни один профиль")
         return
     
-    # Тестирование профилей
+    # Тестирование профилей (если не отключено)
     test_results = None
-    
-    if singbox_path and parsed_profiles:
+    if singbox_path and parsed_profiles and not args.no_test:
         print(f"\nНайдено {len(parsed_profiles)} профилей.")
         
-        if len(parsed_profiles) > 50:
+        if len(parsed_profiles) > 30:
             print("⚠ Слишком много профилей для полного тестирования.")
-            test_choice = input("Тестировать только первые 30 профилей? (y/n): ").lower()
-        else:
-            test_choice = input("Хотите протестировать профили перед выбором? (y/n): ").lower()
+            test_choice = input("Тестировать только первые 20 профилей? (y/n): ").lower()
+            if test_choice == 'y':
+                parsed_profiles = parsed_profiles[:20]
         
+        test_choice = input("Хотите протестировать профили перед выбором? (y/n): ").lower()
         if test_choice == 'y':
-            
             try:
                 print("\n⏳ Начинаю последовательное тестирование...")
-                test_results = test_profiles_sequential(parsed_profiles[:30])
+                test_results = test_profiles_sequential(parsed_profiles)
             except KeyboardInterrupt:
                 print("\n⚠ Тестирование прервано пользователем")
-                test_results = {}
-            except Exception as e:
-                print(f"\n⚠ Ошибка при тестировании: {e}")
                 test_results = {}
     
     # Показываем профили с результатами тестов
@@ -835,29 +921,26 @@ def main():
     
     print(f"\n✅ Выбран профиль: {selected_profile.get('comment')}")
     
-    # Опционально: перетестировать выбранный профиль
-    if singbox_path:
-        retest = input("Протестировать выбранный профиль перед запуском? (y/n): ").lower()
-        if retest == 'y':
-            print("⏳ Тестирую выбранный профиль...")
-            success, latency, error = test_proxy_connection(selected_profile)
-            if success:
-                print(f"✅ Профиль рабочий! Пинг: {latency}ms")
-            else:
-                print(f"⚠ Профиль может не работать: {error}")
-                confirm = input("Всё равно запустить? (y/n): ").lower()
-                if confirm != 'y':
-                    print("Отмена")
-                    return
-    
-    # Создаем и сохраняем конфиг
+    # Создаем outbound конфигурацию
     outbound_config = create_singbox_outbound(selected_profile)
-    full_config = create_full_singbox_config(outbound_config)
     
+    # Создаем полный конфиг в зависимости от режима
+    if args.interface:
+        # Режим tproxy с перехватом трафика с интерфейса
+        print(f"🎯 Настраиваю перехват трафика с интерфейса {args.interface}")
+        full_config = create_tproxy_config(outbound_config, args.tproxy_port)
+    else:
+        # Обычный TUN режим
+        full_config = create_full_singbox_config(outbound_config)
+    
+    # Сохраняем конфиг
     config_dir = Path.home() / ".config" / "sing-box"
     config_dir.mkdir(parents=True, exist_ok=True)
     
-    config_path = config_dir / "config.json"
+    if args.interface:
+        config_path = config_dir / f"tproxy_{args.interface}_config.json"
+    else:
+        config_path = config_dir / "tun_config.json"
     
     # Бекап старого конфига
     if config_path.exists():
@@ -871,44 +954,116 @@ def main():
     with open(config_path, 'w', encoding='utf-8') as f:
         json.dump(full_config, f, indent=2, ensure_ascii=False)
     
-    print(f"📁 Новый конфиг сохранен: {config_path}")
+    print(f"📁 Конфигурация сохранена: {config_path}")
+    
+    # Настраиваем iptables для tproxy, если указан интерфейс
+    iptables_rules = []
+    if args.interface:
+        print(f"📡 Настраиваю iptables правила для интерфейса {args.interface}...")
+        iptables_rules = setup_iptables_rules(args.interface, args.tproxy_port)
     
     # Запуск sing-box
     if singbox_path:
-        launch = input("\nЗапустить sing-box? (y/n): ").lower()
-        if launch == 'y':
-            print(f"\n🚀 Запускаю sing-box...")
-            print("   SOCKS5 прокси: 127.0.0.1:10808")
-            print("   HTTP прокси: 127.0.0.1:10808")
-            print("   Для остановки нажмите Ctrl+C")
-            print("-" * 50)
-            
-            try:
-                process = subprocess.Popen(
-                    [singbox_path, "run", "-c", str(config_path)],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    bufsize=1,
-                    universal_newlines=True
-                )
-                
-                # Выводим логи
-                for line in process.stdout:
-                    print(line, end='')
-                    sys.stdout.flush()
-                    
-            except KeyboardInterrupt:
-                print("\n\n🛑 Останавливаю sing-box...")
-                process.terminate()
-                process.wait(timeout=5)
-                print("✅ Sing-box остановлен")
-            except Exception as e:
-                print(f"❌ Ошибка запуска: {e}")
+        launch_singbox(singbox_path, config_path, args.interface, iptables_rules)
     else:
         print("\n⚠ Sing-box не найден. Конфиг сохранен, но запуск невозможен.")
-        print(f"   Установите sing-box и запустите вручную:")
-        print(f"   sing-box run -c {config_path}")
+
+def setup_tproxy_for_config(interface: str, tproxy_port: int, config_path: str):
+    """Настраивает tproxy для готового конфига"""
+    print(f"📡 Настраиваю iptables правила для интерфейса {interface}...")
+    rules = setup_iptables_rules(interface, tproxy_port)
+    
+    # Регистрируем очистку при выходе
+    import atexit
+    atexit.register(cleanup_iptables_rules, rules)
+    return rules
+
+def launch_singbox(singbox_path: str, config_path: Path, interface: str = None, iptables_rules: list = None):
+    """Запускает sing-box с правильной конфигурацией"""
+    if not singbox_path:
+        print("❌ Sing-box не найден")
+        return
+    
+    # Регистрируем очистку правил iptables при выходе
+    if interface and iptables_rules:
+        import atexit
+        atexit.register(cleanup_iptables_rules, iptables_rules)
+    
+    mode = "tproxy" if interface else "TUN"
+    print(f"\n🚀 Запускаю sing-box в режиме {mode}...")
+    
+    if interface:
+        print(f"   Перехватываю трафик с интерфейса: {interface}")
+        print(f"   Tproxy порт: {args.tproxy_port if 'args' in locals() else 12345}")
+    else:
+        print("   TUN интерфейс: throne-tun")
+        print("   Весь системный трафик через прокси")
+    
+    print("   Для остановки нажмите Ctrl+C")
+    print("-" * 50)
+    
+    try:
+        # Запускаем sing-box (нужны права root для TUN/tproxy)
+        import os
+        if os.geteuid() != 0:
+            print("⚠ Внимание: для запуска нужны права root (sudo)")
+            print(f"   Запустите: sudo {singbox_path} run -c {config_path}")
+            return
+        
+        process = subprocess.Popen(
+            [singbox_path, "run", "-c", str(config_path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            universal_newlines=True
+        )
+        
+        # Выводим логи
+        for line in process.stdout:
+            print(line, end='')
+            sys.stdout.flush()
+            
+    except KeyboardInterrupt:
+        print("\n\n🛑 Останавливаю sing-box...")
+        if 'process' in locals():
+            process.terminate()
+            process.wait(timeout=5)
+        print("✅ Sing-box остановлен")
+    except Exception as e:
+        print(f"❌ Ошибка запуска: {e}")
+
+def interactive_load_profiles():
+    """Интерактивная загрузка профилей (старая логика)"""
+    print("\nВыберите источник профилей:")
+    print("1. URL (скачать файл)")
+    print("2. Локальный файл")
+    print("3. Ввести base64 вручную")
+    print("4. Ввести ссылки вручную (по одной)")
+    
+    choice = input("Ваш выбор (1-4): ").strip()
+    
+    if choice == '1':
+        url = input("Введите URL: ").strip()
+        return load_profiles_from_source(url)
+    elif choice == '2':
+        filepath = input("Введите путь к файлу: ").strip()
+        return load_profiles_from_source(filepath)
+    elif choice == '3':
+        print("Введите base64 строку (Ctrl+D для завершения):")
+        content = sys.stdin.read().strip()
+        return load_profiles_from_source(content)
+    elif choice == '4':
+        print("Вводите ссылки по одной (пустая строка для завершения):")
+        links = []
+        while True:
+            link = input(f"Ссылка {len(links)+1}: ").strip()
+            if not link:
+                break
+            links.append(link)
+        return links
+    
+    return []
 
 def find_singbox() -> Optional[str]:
     """Находит путь к sing-box"""
