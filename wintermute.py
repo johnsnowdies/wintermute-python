@@ -244,7 +244,7 @@ def create_singbox_config(outbound: dict, network_config) -> dict:
 
     return {
         "log": {
-            "level": "info",
+            "level": "warning",
             "timestamp": True
         },
         "inbounds": [tun_config],

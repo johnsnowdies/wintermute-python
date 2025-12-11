@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Модуль для работы с конфигурацией
+Configuration module
 """
 import yaml
 from pathlib import Path
@@ -10,8 +10,8 @@ from dataclasses import dataclass, field
 
 def parse_time_interval(interval: str) -> int:
     """
-    Парсит временной интервал в секунды
-    Поддерживает: 1h, 30m, 120s
+    Parse time interval string to seconds
+    Supports: 1h, 30m, 120s
     """
     if not interval:
         return 3600  # По умолчанию 1 час
@@ -30,7 +30,7 @@ def parse_time_interval(interval: str) -> int:
 
 @dataclass
 class SourceConfig:
-    """Конфигурация источника профилей"""
+    """Profile source configuration"""
     url: str
     type: str = "base64"
     refresh: int = 3600  # секунды
@@ -41,7 +41,7 @@ class SourceConfig:
 
 @dataclass
 class NetworkConfig:
-    """Конфигурация сети"""
+    """Network configuration for tunneling"""
     interface: str
     exclude_subnets: List[str] = field(default_factory=list)
     tun_name: str = "wintermute-tun"
@@ -51,7 +51,7 @@ class NetworkConfig:
 
 @dataclass
 class TestingConfig:
-    """Конфигурация тестирования"""
+    """Testing configuration"""
     healthcheck_urls: List[str] = field(default_factory=lambda: [
         "https://1.1.1.1/cdn-cgi/trace",
         "https://api.ipify.org?format=json",
@@ -65,7 +65,7 @@ class TestingConfig:
 
 @dataclass
 class SelectionConfig:
-    """Конфигурация выбора профилей"""
+    """Profile selection strategy configuration"""
     strategy: str = "latency"
     min_acceptable_latency: int = 500  # мс
     auto_switch: bool = True
@@ -75,7 +75,6 @@ class SelectionConfig:
 
 @dataclass
 class CacheConfig:
-    """Конфигурация кеша"""
     enabled: bool = True
     directory: str = "~/.cache/wintermute/profiles"
     fallback_on_error: bool = True
@@ -83,7 +82,6 @@ class CacheConfig:
 
 @dataclass
 class Config:
-    """Главная конфигурация приложения"""
     sources: List[SourceConfig]
     network: NetworkConfig
     testing: TestingConfig
@@ -92,21 +90,18 @@ class Config:
 
 
 class ConfigManager:
-    """Менеджер конфигурации"""
 
     def __init__(self, config_path: str = "config.yaml"):
         self.config_path = Path(config_path)
         self.config: Optional[Config] = None
 
     def load(self) -> Config:
-        """Загружает конфигурацию из файла"""
         if not self.config_path.exists():
-            raise FileNotFoundError(f"Конфиг не найден: {self.config_path}")
+            raise FileNotFoundError(f"No config file found: {self.config_path}")
 
         with open(self.config_path, 'r', encoding='utf-8') as f:
             data = yaml.safe_load(f)
 
-        # Парсим источники
         sources = []
         for src in data.get('sources', []):
             if src.get('enabled', True):
@@ -119,7 +114,7 @@ class ConfigManager:
                     priority=src.get('priority', 1)
                 ))
 
-        # Парсим сетевую конфигурацию
+        # Network
         net = data.get('network', {})
         network = NetworkConfig(
             interface=net.get('interface', 'eth0'),
@@ -129,7 +124,7 @@ class ConfigManager:
             mtu=net.get('tun', {}).get('mtu', 1500)
         )
 
-        # Парсим конфигурацию тестирования
+        # Testing config
         test = data.get('testing', {})
         testing = TestingConfig(
             healthcheck_urls=test.get('healthcheck_urls', []),
@@ -139,7 +134,7 @@ class ConfigManager:
             initial_delay=parse_time_interval(test.get('initial_delay', '10s'))
         )
 
-        # Парсим конфигурацию выбора
+        # Selection config
         sel = data.get('selection', {})
         selection = SelectionConfig(
             strategy=sel.get('strategy', 'latency'),
@@ -149,7 +144,7 @@ class ConfigManager:
             backup_profiles_count=sel.get('backup_profiles_count', 3)
         )
 
-        # Парсим конфигурацию кеша
+        # Cache config
         cache_data = data.get('cache', {})
         cache = CacheConfig(
             enabled=cache_data.get('enabled', True),
@@ -168,7 +163,6 @@ class ConfigManager:
         return self.config
 
     def get_config(self) -> Config:
-        """Возвращает текущую конфигурацию"""
         if self.config is None:
             self.load()
         return self.config
