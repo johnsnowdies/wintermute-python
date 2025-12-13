@@ -47,6 +47,7 @@ class NetworkConfig:
     tun_name: str = "wintermute-tun"
     tun_subnet: str = "172.19.0.0/30"
     mtu: int = 1500
+    ipv4_forward: bool = False
 
 
 @dataclass
@@ -61,6 +62,9 @@ class TestingConfig:
     healthcheck_interval: int = 30  # секунды
     failure_threshold: int = 3
     initial_delay: int = 10  # секунды - задержка перед первой проверкой
+    max_test: int = 100
+    healthcheck_content_url: str = None
+    healthcheck_content_md5: str = None
 
 
 @dataclass
@@ -121,7 +125,8 @@ class ConfigManager:
             exclude_subnets=net.get('exclude_subnets', []),
             tun_name=net.get('tun', {}).get('name', 'wintermute-tun'),
             tun_subnet=net.get('tun', {}).get('subnet', '172.19.0.0/30'),
-            mtu=net.get('tun', {}).get('mtu', 1500)
+            mtu=net.get('tun', {}).get('mtu', 1500),
+            ipv4_forward=net.get('ipv4_forward', False)
         )
 
         # Testing config
@@ -131,7 +136,10 @@ class ConfigManager:
             timeout=test.get('timeout', 5),
             healthcheck_interval=parse_time_interval(test.get('healthcheck_interval', '30s')),
             failure_threshold=test.get('failure_threshold', 3),
-            initial_delay=parse_time_interval(test.get('initial_delay', '10s'))
+            initial_delay=parse_time_interval(test.get('initial_delay', '10s')),
+            max_test=test.get('max_test', 100),
+            healthcheck_content_url=test.get('healthcheck_content_url', None),
+            healthcheck_content_md5=test.get('healthcheck_content_md5', None)
         )
 
         # Selection config

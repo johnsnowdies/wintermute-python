@@ -101,8 +101,8 @@ class HealthChecker:
                         self._last_status = True
                     self._failure_count = 0
                     # Выводим успешную проверку только иногда (не спамим)
-                    #if self._failure_count == 0 and hasattr(self, '_verbose'):
-                    print("✓ Проверка туннеля: OK")
+                    if self._failure_count == 0 and hasattr(self, '_verbose'):
+                        print("✓ Проверка туннеля: OK")
                 else:
                     self._failure_count += 1
                     print(f"⚠ Проверка туннеля не прошла ({self._failure_count}/{self.failure_threshold})")

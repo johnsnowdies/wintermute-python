@@ -60,7 +60,7 @@ def setup_iptables_rules(interface: str, tun_interface: str, tun_subnet: str, ex
 
     # 5. Настраиваем маршруты в таблице
     rules.append(f"ip route add {tun_subnet} dev {tun_interface} table {routing_table_name}")
-    rules.append(f"ip route add default dev {tun_interface} table {routing_table_name}")
+    # rules.append(f"ip route add default dev {tun_interface} table {routing_table_name}")
 
     # 6. Добавляем NAT (маскарадинг) для трафика из TUN
     rules.append(f"iptables -t nat -A POSTROUTING -o {tun_interface} -j MASQUERADE")

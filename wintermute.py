@@ -11,6 +11,7 @@ import signal
 import time
 import threading
 import atexit
+import datetime
 from pathlib import Path
 from typing import Optional, List
 import argparse
@@ -46,14 +47,16 @@ class SingboxManager:
         except Exception as e:
             print(f"⚠ Ошибка чтения логов: {e}")
 
-    def start(self):
+    def start(self, silent: bool = True):
         """Запускает sing-box"""
         if self._running and self.process:
-            print("⚠ Sing-box уже запущен")
+            if not silent:
+                print("⚠ Sing-box уже запущен")
             return False
 
-        print(f"\n🚀 Запускаю sing-box...")
-        print(f"   Конфиг: {self.config_path}")
+        if not silent:
+            print(f"\n🚀 Запускаю sing-box...")
+            print(f"   Конфиг: {self.config_path}")
 
         try:
             self.process = subprocess.Popen(
@@ -75,27 +78,33 @@ class SingboxManager:
 
             # Проверяем что процесс запустился
             if self.process.poll() is not None:
-                print("❌ Sing-box не смог запуститься")
+                if not silent:
+                    print("❌ Sing-box не смог запуститься")
                 # Читаем вывод ошибки
                 if self.process.stdout:
                     output = self.process.stdout.read()
                     if output:
-                        print(f"Вывод:\n{output}")
+                        if not silent:
+                            print(f"Вывод:\n{output}")
                 return False
-
-            print("✅ Sing-box запущен")
+    
+            if not silent:
+                print("✅ Sing-box запущен")
             return True
 
         except Exception as e:
-            print(f"❌ Ошибка запуска sing-box: {e}")
+            if not silent:
+                print(f"❌ Ошибка запуска sing-box: {e}")
             return False
 
-    def stop(self):
+    def stop(self, silent: bool = True):
         """Останавливает sing-box"""
         if not self._running or not self.process:
             return
 
-        print("\n🛑 Останавливаю sing-box...")
+        if not silent:
+            print("\n🛑 Останавливаю sing-box...")
+
         try:
             self.process.terminate()
             self.process.wait(timeout=5)
@@ -105,7 +114,8 @@ class SingboxManager:
 
         self._running = False
         self.process = None
-        print("✅ Sing-box остановлен")
+        if not silent:
+            print("✅ Sing-box остановлен")
 
     def restart(self):
         """Перезапускает sing-box"""
@@ -224,7 +234,7 @@ def _create_ss_outbound(profile: Profile) -> dict:
     }
 
 
-def create_singbox_config(outbound: dict, network_config) -> dict:
+def create_singbox_config(outbound: dict, network_config, proxy_mode: bool = False, proxy_port: int = 3128) -> dict:
     """Создает полную конфигурацию sing-box"""
     tun_config = {
         "type": "tun",
@@ -242,9 +252,16 @@ def create_singbox_config(outbound: dict, network_config) -> dict:
         "route_exclude_address": ["127.0.0.0/8"] + network_config.exclude_subnets + ["224.0.0.0/4", "255.255.255.255/32"]
     }
 
+    if proxy_mode:
+        tun_config = {
+        "type": "socks",
+        "tag": "test-socks",
+        "listen_port": proxy_port
+    }
+
     return {
         "log": {
-            "level": "warning",
+            "level": "warn",
             "timestamp": True
         },
         "inbounds": [tun_config],
@@ -265,14 +282,19 @@ def create_singbox_config(outbound: dict, network_config) -> dict:
     }
 
 
-def save_singbox_config(config: dict, config_path: Path):
+def save_singbox_config(config: dict, config_path: Path, proxy_mode: bool = False, proxy_port: int = 3128) -> str:
     """Сохраняет конфигурацию sing-box"""
+
+    if proxy_mode:
+        config_path = Path.home() / ".config" / "sing-box" / f"proxy_{proxy_port}_{datetime.datetime.now()}.json"
+
     config_path.parent.mkdir(parents=True, exist_ok=True)
 
     with open(config_path, 'w', encoding='utf-8') as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
 
     print(f"📁 Конфигурация сохранена: {config_path}")
+    return config_path
 
 
 class Wintermute:
@@ -321,9 +343,11 @@ class Wintermute:
 
         # Тестируем и выбираем лучший
         best_profile = self.profile_manager.test_and_select_best(
-            max_test=20,
+            max_test=self.config.testing.max_test,
             timeout=self.config.testing.timeout,
-            min_latency=self.config.selection.min_acceptable_latency
+            min_latency=self.config.selection.min_acceptable_latency,
+            test_real=True if self.config.testing.healthcheck_content_url and self.config.testing.healthcheck_content_md5 else False,
+            instance=self
         )
 
         if not best_profile:
@@ -332,17 +356,23 @@ class Wintermute:
 
         return True
 
-    def setup_singbox(self) -> bool:
+    def setup_singbox(self, profile: Profile = None, proxy_mode: bool = False, proxy_port: int = 3128) -> bool:
         """Настраивает и запускает sing-box с выбранным профилем"""
-        profile = self.profile_manager.get_selected_profile()
+        profile = profile or self.profile_manager.get_selected_profile()
         if not profile:
             print("❌ Профиль не выбран")
             return False
 
         # Создаем конфигурацию
         outbound = create_singbox_outbound(profile)
-        config = create_singbox_config(outbound, self.config.network)
-        save_singbox_config(config, self.singbox_config_path)
+        config = create_singbox_config(
+            outbound, 
+            self.config.network,
+            proxy_mode,
+            proxy_port,
+            )
+
+        self.singbox_config_path = save_singbox_config(config, self.singbox_config_path, proxy_mode, proxy_port)
 
         # Находим sing-box
         singbox_path = find_singbox()
@@ -358,13 +388,14 @@ class Wintermute:
         # Даем время sing-box поднять TUN интерфейс
         time.sleep(2)
 
-        # Настраиваем iptables правила
-        self._iptables_rules = setup_iptables_rules(
-            interface=self.config.network.interface,
-            tun_interface=self.config.network.tun_name,
-            tun_subnet=self.config.network.tun_subnet,
-            exclude_subnets=self.config.network.exclude_subnets
-        )
+        if self.config.network.ipv4_forward:
+            # Настраиваем iptables правила
+            self._iptables_rules = setup_iptables_rules(
+                interface=self.config.network.interface,
+                tun_interface=self.config.network.tun_name,
+                tun_subnet=self.config.network.tun_subnet,
+                exclude_subnets=self.config.network.exclude_subnets
+            )
 
         return True
 
@@ -403,14 +434,14 @@ class Wintermute:
             self.profile_manager.selected_profile = backup
 
             # Настраиваем и запускаем sing-box
-            if self.setup_singbox():
+            if self.setup_singbox(silent=False):
                 print("✅ Переключение успешно!")
                 return
 
         # Если резервные не помогли - перезагружаем все профили
         print("\n🔄 Резервные профили не помогли - перезагружаю профили...")
         if self.load_and_select_profile():
-            self.setup_singbox()
+            self.setup_singbox(silent=False)
 
     def start_profile_refresh(self):
         """Запускает фоновый процесс обновления профилей"""
@@ -452,7 +483,7 @@ class Wintermute:
             return 1
 
         # Настраиваем и запускаем sing-box
-        if not self.setup_singbox():
+        if not self.setup_singbox(silent=False):
             return 1
 
         # Запускаем мониторинг

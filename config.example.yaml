@@ -1,0 +1,55 @@
+# Wintermute Configuration
+
+# Logging configuration
+logging:
+  level: "info"                 # debug, info, warning, error
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: null                    # null for stdout, or path like "/var/log/wintermute.log"
+
+sources:
+  - url: ""
+    refresh: "1h"
+    filter: "%D0%9E%D0%B1%D1%85%D0%BE%D0%B4"
+    enabled: true
+  - url: ""
+    refresh: "1h"
+    filter: ""
+    enabled: true
+
+cache:
+  enabled: true
+  directory: "~/.cache/wintermute/profiles"
+  fallback_on_error: true
+
+
+network:
+  interface: "enp0s31f6"
+  exclude_subnets:
+    - "192.168.50.0/24"
+  
+  tun:
+    name: "wintermute-tun"
+    subnet: "172.18.0.0/30"
+    mtu: 1500
+
+  ipv4_forward: false
+
+testing:
+  healthcheck_urls:
+    - "https://google.com"
+    - "https://1.1.1.1/cdn-cgi/trace"
+    - "http://connectivitycheck.gstatic.com/generate_204"
+  healthcheck_content_url: ""
+  healthcheck_content_md5: ""
+  timeout: 1
+  healthcheck_interval: "30s"
+  failure_threshold: 3
+  initial_delay: "10s"
+  max_test: 100
+
+selection:
+  strategy: "latency"
+  min_acceptable_latency: 500
+  auto_switch: true
+  switch_delay: "10s"
+  backup_profiles_count: 3

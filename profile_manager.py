@@ -9,6 +9,9 @@ import time
 import threading
 import json
 import hashlib
+import hashlib
+
+from requests.exceptions import RequestException
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, unquote
@@ -162,7 +165,7 @@ class ProfileLoader:
                 line = line.strip()
                 if line and not line.startswith('#'):
                     # Фильтр по умолчанию - профили с "Обход" в названии
-                    if not profile_filter or profile_filter in line or "%D0%9E%D0%B1%D1%85%D0%BE%D0%B4" in line:
+                    if not profile_filter or profile_filter in line:
                         profiles.append(line)
 
             print(f"   ✓ Найдено профилей: {len(profiles)}")
@@ -350,7 +353,79 @@ class ProfileTester:
     """Тестирование профилей"""
 
     @staticmethod
-    def test_tcp_connection(profile: Profile, timeout: int = 3) -> Tuple[bool, Optional[int]]:
+    def test_real_connection(profile: Profile, timeout: int = 1, instance = None, proxy_port: int = 3128) -> Tuple[bool, Optional[int]]:
+        # Запускаем профиль
+        instance.setup_singbox(profile, proxy_mode=True, proxy_port=proxy_port);
+        
+        success = False
+        latency = None
+        response_content = None
+        
+        try:
+            # Получаем URL и MD5 хеш из конфигурации клиента
+            test_url = instance.config.testing.healthcheck_content_url
+            expected_md5 = instance.config.testing.healthcheck_content_md5
+            
+            if not test_url or not expected_md5:
+                print("Ошибка: не указаны URL или MD5 для проверки в конфигурации")
+                return False, None
+            
+            print(f"Тестирование соединения с URL: {test_url}")
+            
+            # Замеряем время выполнения запроса
+            start_time = time.time()
+            
+            # Выполняем HTTPS запрос с таймаутом
+            response = requests.get(
+                test_url, 
+                timeout=timeout,
+                verify=True,
+                proxies=dict(http='socks5://localhost:{proxy_port}')
+            )
+            
+            # Рассчитываем latency (задержку)
+            end_time = time.time()
+            latency = round((end_time - start_time) * 1000)  # в миллисекундах
+            
+            print(f"HTTP статус: {response.status_code}")
+            print(f"Latency: {latency} ms")
+            
+            # Проверяем статус код
+            if response.status_code == 200:
+                response_content = response.text
+                
+                # Вычисляем MD5 хеш полученного содержимого
+                content_md5 = hashlib.md5(response_content.encode('utf-8')).hexdigest()
+                print(f"Ожидаемый MD5: {expected_md5}")
+                print(f"Полученный MD5: {content_md5}")
+                
+                # Сравниваем хеши
+                if content_md5 == expected_md5:
+                    success = True
+                    print("Проверка пройдена: содержимое совпадает!")
+                else:
+                    print("Ошибка: содержимое не совпадает с ожидаемым!")
+            else:
+                print(f"Ошибка: HTTP статус {response.status_code}")
+                
+        except RequestException as e:
+            print(f"Ошибка соединения: {str(e)}")
+        except Exception as e:
+            print(f"Неожиданная ошибка: {str(e)}")
+        
+        # Останавливаем профиль
+        if instance.singbox_manager:
+            instance.singbox_manager.stop()
+        
+        # Возвращаем результат и latency
+        if success:
+            print(f"Проверка успешно завершена. Latency: {latency} ms")
+            return True, latency
+        else:
+            return False, latency
+
+    @staticmethod
+    def test_tcp_connection(profile: Profile, timeout: int = 1) -> Tuple[bool, Optional[int]]:
         """Простая проверка TCP подключения"""
         try:
             start_time = time.time()
@@ -370,7 +445,7 @@ class ProfileTester:
             return False, None
 
     @staticmethod
-    def test_profiles(profiles: List[Profile], max_test: int = 20, timeout: int = 3) -> List[Profile]:
+    def test_profiles(profiles: List[Profile], max_test: int = 100, timeout: int = 1, test_real: bool = False, instance = None) -> List[Profile]:
         """
         Тестирует профили и возвращает отсортированные по латентности
         """
@@ -381,7 +456,10 @@ class ProfileTester:
         for idx, profile in enumerate(profiles[:max_test]):
             print(f"  [{idx+1:2d}] {profile.host}:{profile.port} ({profile.protocol.upper()})...", end=" ", flush=True)
 
+            # 1. Проверка TCP коннекта
             success, latency = ProfileTester.test_tcp_connection(profile, timeout)
+            if success and test_real and instance:
+                success, latency = ProfileTester.test_real_connection(profile, timeout, instance)
 
             profile.is_working = success
             profile.latency = latency
@@ -509,14 +587,14 @@ class ProfileManager:
             self._refresh_thread.join(timeout=5)
         print("✓ Автообновление профилей остановлено")
 
-    def test_and_select_best(self, max_test: int = 20, timeout: int = 3, min_latency: int = 500) -> Optional[Profile]:
+    def test_and_select_best(self, max_test: int = 100, timeout: int = 1, min_latency: int = 500, test_real: bool = False, instance = None) -> Optional[Profile]:
         """
         Тестирует профили и выбирает лучший
         """
         with self._lock:
             profiles_to_test = self.profiles.copy()
 
-        self.working_profiles = ProfileTester.test_profiles(profiles_to_test, max_test, timeout)
+        self.working_profiles = ProfileTester.test_profiles(profiles_to_test, max_test, timeout, test_real, instance)
 
         if not self.working_profiles:
             print("❌ Нет рабочих профилей!")
