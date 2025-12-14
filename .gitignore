@@ -1,3 +1,6 @@
 .idea
 config.yaml
 venv
+__pycache__
+wintermute_python.sublime-project
+wintermute_python.sublime-workspace

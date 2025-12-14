@@ -1,0 +1,50 @@
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.py]
+indent_style = space
+indent_size = 4
+
+[{*.cfg,*.conf,.flake8}]
+indent_style = space
+indent_size = 4
+
+[*.yml]
+indent_style = space
+indent_size = 2
+
+[*.xml]
+indent_style = space
+indent_size = 2
+
+[*.sh]
+indent_style = space
+indent_size = 2
+
+[*.md]
+indent_style = space
+indent_size = 2
+
+[Dockerfile]
+indet_style = space
+indent_size = 4
+
+[Makefile]
+indent_style = tab
+indent_size = 4
+
+[*.html]
+charset = utf-8
+
+# Ignore paths
+[migrations/*]
+generated_code = true
+
+[data/*]
+generated_code = true
+
+[__pycache__]
+generated_code = true

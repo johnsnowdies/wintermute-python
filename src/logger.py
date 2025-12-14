@@ -1,7 +1,3 @@
-#!/usr/bin/env python3
-"""
-Logging configuration for Wintermute
-"""
 import logging
 import sys
 from typing import Optional
@@ -11,7 +7,7 @@ def setup_logger(
     name: str,
     level: str = "info",
     log_format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    log_file: Optional[str] = None
+    log_file: Optional[str] = None,
 ) -> logging.Logger:
     """
     Setup logger with given configuration
@@ -29,11 +25,11 @@ def setup_logger(
 
     # Convert string level to logging constant
     level_map = {
-        'debug': logging.DEBUG,
-        'info': logging.INFO,
-        'warning': logging.WARNING,
-        'error': logging.ERROR,
-        'critical': logging.CRITICAL
+        "debug": logging.DEBUG,
+        "info": logging.INFO,
+        "warning": logging.WARNING,
+        "error": logging.ERROR,
+        "critical": logging.CRITICAL,
     }
     log_level = level_map.get(level.lower(), logging.INFO)
     logger.setLevel(log_level)
@@ -46,7 +42,7 @@ def setup_logger(
 
     # Setup handler (file or stdout)
     if log_file:
-        handler = logging.FileHandler(log_file, encoding='utf-8')
+        handler = logging.FileHandler(log_file, encoding="utf-8")
     else:
         handler = logging.StreamHandler(sys.stdout)
 
