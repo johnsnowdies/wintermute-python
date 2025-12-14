@@ -1,5 +1,6 @@
 import threading
 import time
+import hashlib
 from typing import Callable, List, Optional
 
 import requests
@@ -139,12 +140,36 @@ class HealthChecker:
         The check is performed directly (without a proxy), because in TUN mode
         all traffic already automatically goes through the tunnel.
         """
+        from wintermute import Wintermute
+
+        client = Wintermute(test_mode=True)
+        test_url = client.config.testing.healthcheck_content_url
+        expected_md5 = client.config.testing.healthcheck_content_md5
+        del client
+
         for url in self.check_urls:
             try:
-                response = requests.get(url, timeout=self.timeout, verify=False)
+                # First check
+                response = requests.get(url, timeout=self.timeout, verify=True)
 
                 if response.status_code in [200, 204]:
-                    return True
+                    # Second check
+                    response = requests.get(
+                        test_url,
+                        timeout=5,
+                        verify=True,
+                    )
+                    # check code
+                    if response.status_code == 200:
+                        response_content = response.text
+
+                        content_md5 = hashlib.md5(
+                            response_content.encode("utf-8")
+                        ).hexdigest()
+
+                        # check hashes
+                        if content_md5 == expected_md5:
+                            return True
 
             except requests.exceptions.Timeout:
                 continue
