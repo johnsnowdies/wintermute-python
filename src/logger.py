@@ -5,7 +5,7 @@ from typing import Optional
 
 def setup_logger(
     name: str,
-    level: str = "info",
+    level: str = "debug",
     log_format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     log_file: Optional[str] = None,
 ) -> logging.Logger:

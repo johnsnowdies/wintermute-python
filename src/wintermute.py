@@ -11,11 +11,7 @@ from typing import List, Optional
 from config_manager import ConfigManager
 from healthcheck import HealthChecker
 from logger import get_logger, setup_logger
-from network_setup import (
-    check_interface_exists,
-    cleanup_iptables_rules,
-    setup_iptables_rules,
-)
+from network_setup import check_interface_exists, cleanup_iptables_rules, setup_iptables_rules
 from profile_manager import Profile, ProfileManager
 from singbox_manager import SingboxManager
 from utils import find_singbox
@@ -331,7 +327,7 @@ class Wintermute:
         """Start tunnel watchdog"""
         self.healthchecker = HealthChecker(
             check_urls=self.config.testing.healthcheck_urls,
-            check_interval=self.config.testing.healthcheck_interval,
+            check_interval=10,  # self.config.testing.healthcheck_interval,
             timeout=self.config.testing.timeout,
             failure_threshold=self.config.testing.failure_threshold,
             on_failure_callback=self.on_tunnel_failure,

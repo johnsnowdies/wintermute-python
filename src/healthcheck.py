@@ -1,6 +1,6 @@
+import hashlib
 import threading
 import time
-import hashlib
 from typing import Callable, List, Optional
 
 import requests
@@ -123,6 +123,7 @@ class HealthChecker:
                         if self.on_failure_callback:
                             try:
                                 self.on_failure_callback()
+                                self._failure_count = 0
                             except Exception as e:
                                 self.logger.error(f"Callback error: {e}")
 
@@ -150,14 +151,14 @@ class HealthChecker:
         for url in self.check_urls:
             try:
                 # First check
-                response = requests.get(url, timeout=self.timeout, verify=True)
+                response = requests.get(url, timeout=self.timeout, verify=False)
 
                 if response.status_code in [200, 204]:
                     # Second check
                     response = requests.get(
                         test_url,
-                        timeout=5,
-                        verify=True,
+                        timeout=self.timeout,
+                        verify=False,
                     )
                     # check code
                     if response.status_code == 200:
