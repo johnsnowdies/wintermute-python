@@ -74,7 +74,7 @@ class HealthChecker:
         self._running = False
         if self._thread:
             self._thread.join(timeout=5)
-        print("✓ HealthChecker остановлен")
+        self.logger.info("HealthChecker stopped")
 
     def is_running(self) -> bool:
         """Check watchdog is running"""

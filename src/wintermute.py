@@ -125,10 +125,9 @@ class Wintermute:
             outbound["transport"] = transport
 
         # TLS/Reality
-        """
-        TODO: support of reality?
+
         if extra["security"] in ["tls", "reality"]:
-            tls_config = {"enabled": True}
+            tls_config = {"enabled": True, "utils": {}, "reality": {}}
 
             if extra.get("sni"):
                 tls_config["server_name"] = extra["sni"]
@@ -146,7 +145,6 @@ class Wintermute:
                 }
 
             outbound["tls"] = tls_config
-            """
 
         outbound["packet_encoding"] = extra.get("packet_encoding", "xudp")
 
