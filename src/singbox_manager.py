@@ -40,7 +40,7 @@ class SingboxManager:
             self.logger.warn("SingboxManager start failed: already running")
             return False
 
-        self.logger.info(f"Running Sing-Box with config: {self.config_path}")
+        self.logger.debug(f"Running Sing-Box with config: {self.config_path}")
 
         try:
             self.process = subprocess.Popen(
@@ -67,7 +67,7 @@ class SingboxManager:
                         self.logger.error(f"STDOUT:\n{output}")
                 return False
 
-            self.logger.info("SingboxManager start OK")
+            self.logger.debug("SingboxManager start OK")
             return True
 
         except Exception as e:
@@ -79,7 +79,7 @@ class SingboxManager:
         if not self._running or not self.process:
             return
 
-        self.logger.info("Stopping Sing-Box")
+        self.logger.debug("Stopping Sing-Box")
 
         try:
             self.process.terminate()
@@ -90,11 +90,11 @@ class SingboxManager:
 
         self._running = False
         self.process = None
-        self.logger.info("Sing-Box successfully terminated")
+        self.logger.debug("Sing-Box successfully terminated")
 
     def restart(self):
         """Restart Sing-Box process"""
-        self.logger.info("Restarting sing-box")
+        self.logger.debug("Restarting sing-box")
         self.stop()
         time.sleep(1)
         return self.start()

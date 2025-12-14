@@ -135,7 +135,7 @@ class ProfileLoader:
              profile_filter: Profile filter
              use_cache_fallback: Use the cache when the source is unavailable
         """
-        self.logger.info(f"Loading profiles from: {url}")
+        self.logger.debug(f"Loading profiles from: {url}")
 
         profiles = []
 
@@ -147,7 +147,7 @@ class ProfileLoader:
             # Trying to decode base64
             decoded = decode_b64_if_valid(content)
             if decoded:
-                self.logger.info("  decoded from base64")
+                self.logger.debug("  decoded from base64")
                 content = decoded
 
             # Split into lines
@@ -161,12 +161,13 @@ class ProfileLoader:
                     if not profile_filter or profile_filter in line:
                         profiles.append(line)
 
+            self.logger.info(f"URL: {url}:")
             self.logger.info(f"   Profiles found: {len(profiles)}")
 
             # Save cache
             if self.cache and profiles:
                 self.cache.save(url, profiles)
-                self.logger.info("   Profiles saved into cache")
+                self.logger.debug("   Profiles saved into cache")
 
             return profiles
 
@@ -377,7 +378,7 @@ class ProfileTester:
                 logger.error("Configuration error: no URL or MD5")
                 return False, None
 
-            logger.info(f"Test connection for profile {profile.comment}")
+            logger.debug(f"Test connection for profile {profile.comment}")
 
             start_time = time.time()
 
@@ -396,8 +397,8 @@ class ProfileTester:
             end_time = time.time()
             latency = round((end_time - start_time) * 1000)  # ms
 
-            logger.info(f"HTTP статус: {response.status_code}")
-            logger.info(f"Latency: {latency} ms")
+            logger.debug(f"HTTP статус: {response.status_code}")
+            logger.debug(f"Latency: {latency} ms")
 
             # check code
             if response.status_code == 200:
@@ -408,16 +409,16 @@ class ProfileTester:
                 # check hashes
                 if content_md5 == expected_md5:
                     success = True
-                    logger.info("SUCCESS: Hash matches")
+                    logger.debug("SUCCESS: Hash matches")
                 else:
-                    logger.info("FAILURE: Hash mismatches")
+                    logger.debug("FAILURE: Hash mismatches")
             else:
-                logger.error(f"HTTP code {response.status_code}")
+                logger.debug(f"HTTP code {response.status_code}")
 
         except RequestException as e:
-            logger.error(f"Connection error: {str(e)}")
+            logger.debug(f"Connection error: {str(e)}")
         except Exception as e:
-            logger.error(f"Unexpected error: {str(e)}")
+            logger.debug(f"Unexpected error: {str(e)}")
 
         # Stop Sing-Box
         if client.singbox_manager:
@@ -459,7 +460,7 @@ class ProfileTester:
         """Asynchronous testing of a single profile"""
         setup_logger(__name__)
         logger = get_logger(__name__)
-        logger.info(
+        logger.debug(
             f"[{idx+1:2d}] {profile.host}:{profile.port} ({profile.protocol.upper()})..."
         )
 
@@ -643,7 +644,7 @@ class ProfileManager:
         self._running = False
         if self._refresh_thread:
             self._refresh_thread.join(timeout=5)
-        self.logger.info("Auto update stopped")
+        self.logger.debug("Auto update stopped")
 
     def test_and_select_best(
         self,
@@ -669,18 +670,21 @@ class ProfileManager:
         # Pick the best one
         best = self.working_profiles[0]
 
+        self.logger.info("=" * 80)
+
         if best.latency and best.latency <= min_latency:
-            self.logger.info(f"Profile picked: {best.comment}")
+            self.logger.info("Profile picked")
+            self.logger.info(f"   {best.comment}")
             self.logger.info(
                 f"   {best.protocol.upper()} {best.host}:{best.port} [{best.latency}ms]"
             )
         else:
-            self.logger.info(
-                f"High latency profile selected (still the best one): {best.comment}"
-            )
+            self.logger.info("High latency profile selected (still the best one):")
+            self.logger.info(f"   {best.comment}")
             self.logger.info(
                 f"   {best.protocol.upper()} {best.host}:{best.port} [{best.latency}ms]"
             )
+        self.logger.info("=" * 80)
 
         with self._lock:
             self.selected_profile = best

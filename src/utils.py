@@ -39,5 +39,5 @@ def decode_b64_if_valid(s: str) -> Optional[str]:
     except Exception as e:
         setup_logger(__name__)
         logger = get_logger(__name__)
-        logger.warning(f"_decode_b64_if_valid general error: {e}")
+        logger.debug(f"_decode_b64_if_valid general error: {e}")
         return None

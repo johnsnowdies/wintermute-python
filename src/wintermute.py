@@ -34,6 +34,7 @@ class Wintermute:
         self.config_manager = ConfigManager(config_path)
         self.config = self.config_manager.load()
         self.logger = get_logger(__name__)
+        self.test_mode = test_mode
 
         cache_dir = (
             self.config.cache.directory if self.config.cache.enabled else "./cache"
@@ -90,7 +91,7 @@ class Wintermute:
                 outbound["flow"] = flow
 
         # Transport
-        if extra["type"] != "tcp":
+        if extra["type"] != "tcp" and extra["type"] != "xhttp":
             transport = {"type": extra["type"]}
 
             if extra["type"] == "ws":
@@ -199,7 +200,10 @@ class Wintermute:
             }
 
         return {
-            "log": {"level": "warn", "timestamp": True},
+            "log": {
+                "level": "error" if not self.test_mode else "panic",
+                "timestamp": True,
+            },
             "inbounds": [tun_config],
             "outbounds": [outbound, {"type": "direct", "tag": "direct"}],
             "route": {
@@ -239,7 +243,7 @@ class Wintermute:
         with open(config_path, "w", encoding="utf-8") as f:
             json.dump(config, f, indent=2, ensure_ascii=False)
 
-        self.logger.info(f"Configuration saved: {config_path}")
+        self.logger.debug(f"Configuration saved: {config_path}")
         return config_path
 
     def load_and_select_profile(self) -> bool:
@@ -393,7 +397,9 @@ class Wintermute:
         )
 
         self.logger = get_logger(__name__)
+        self.logger.info("=" * 80)
         self.logger.info("Wintermute")
+        self.logger.info("=" * 80)
 
         # Check for root
         if os.geteuid() != 0:
@@ -453,10 +459,10 @@ class Wintermute:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Wintermute - Автоматический менеджер Sing-box туннелей"
+        description="Wintermute - Sing-Box configuration manager"
     )
     parser.add_argument(
-        "-c", "--config", default="config.yaml", help="Путь к файлу конфигурации"
+        "-c", "--config", default="config.yaml", help="Configuration file path"
     )
 
     args = parser.parse_args()
