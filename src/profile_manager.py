@@ -354,14 +354,17 @@ class ProfileTester:
 
     @staticmethod
     def test_real_connection(
-        profile: Profile, timeout: int = 1, proxy_port: int = 3128
+        profile: Profile,
+        timeout: int = 1,
+        proxy_port: int = 3128,
+        config: str = "config.yaml",
     ) -> Tuple[bool, Optional[int]]:
         from wintermute import Wintermute
 
         setup_logger(__name__)
         logger = get_logger(__name__)
 
-        client = Wintermute(test_mode=True)
+        client = Wintermute(test_mode=True, config_path=config)
         client.setup_singbox(profile, proxy_mode=True, proxy_port=proxy_port)
 
         time.sleep(10)
@@ -455,7 +458,12 @@ class ProfileTester:
 
     @staticmethod
     async def _test_single_profile(
-        profile: Profile, idx: int, timeout: int, test_real: bool, proxy_port: int
+        profile: Profile,
+        idx: int,
+        timeout: int,
+        test_real: bool,
+        proxy_port: int,
+        config: str = "config.yaml",
     ) -> Optional[Profile]:
         """Asynchronous testing of a single profile"""
         setup_logger(__name__)
@@ -475,7 +483,12 @@ class ProfileTester:
         # 2. If TCP has passed and a real check is needed
         if success and test_real:
             success, latency = await loop.run_in_executor(
-                None, ProfileTester.test_real_connection, profile, timeout, proxy_port
+                None,
+                ProfileTester.test_real_connection,
+                profile,
+                timeout,
+                proxy_port,
+                config,
             )
 
         profile.is_working = success
@@ -491,7 +504,11 @@ class ProfileTester:
 
     @staticmethod
     async def _test_profiles_async(
-        profiles: List[Profile], max_test: int, timeout: int, test_real: bool
+        profiles: List[Profile],
+        max_test: int,
+        timeout: int,
+        test_real: bool,
+        config: str = "config.yaml",
     ) -> List[Profile]:
         """Asynchronous profile testing"""
         setup_logger(__name__)
@@ -503,7 +520,7 @@ class ProfileTester:
         for idx, profile in enumerate(profiles[:max_test]):
             proxy_port = ProfileTester.STARTING_PORT + idx
             task = ProfileTester._test_single_profile(
-                profile, idx, timeout, test_real, proxy_port
+                profile, idx, timeout, test_real, proxy_port, config
             )
             tasks.append(task)
 
@@ -529,20 +546,25 @@ class ProfileTester:
         max_test: int = 100,
         timeout: int = 1,
         test_real: bool = False,
+        config: str = "config.yaml",
     ) -> List[Profile]:
         """
         Tests profiles and returns sorted by latency
         Wrapper for asynchronous testing
         """
         return asyncio.run(
-            ProfileTester._test_profiles_async(profiles, max_test, timeout, test_real)
+            ProfileTester._test_profiles_async(
+                profiles, max_test, timeout, test_real, config
+            )
         )
 
 
 class ProfileManager:
     """Profile Manager with auto-update"""
 
-    def __init__(self, cache_dir: str, use_cache: bool = True):
+    def __init__(
+        self, cache_dir: str, use_cache: bool = True, config: str = "config.yaml"
+    ):
         self.profiles: List[Profile] = []
         self.working_profiles: List[Profile] = []
         self.selected_profile: Optional[Profile] = None
@@ -552,6 +574,7 @@ class ProfileManager:
         self._running = False
         self._sources = []
         self._refresh_callback: Optional[callable] = None
+        self.config = config
         setup_logger(__name__)
         self.logger = get_logger(__name__)
 
@@ -660,7 +683,7 @@ class ProfileManager:
             profiles_to_test = self.profiles.copy()
 
         self.working_profiles = ProfileTester.test_profiles(
-            profiles_to_test, max_test, timeout, test_real
+            profiles_to_test, max_test, timeout, test_real, self.config
         )
 
         if not self.working_profiles:

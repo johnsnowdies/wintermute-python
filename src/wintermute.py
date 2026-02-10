@@ -11,7 +11,11 @@ from typing import List, Optional
 from config_manager import ConfigManager
 from healthcheck import HealthChecker
 from logger import get_logger, setup_logger
-from network_setup import check_interface_exists, cleanup_iptables_rules, setup_iptables_rules
+from network_setup import (
+    check_interface_exists,
+    cleanup_iptables_rules,
+    setup_iptables_rules,
+)
 from profile_manager import Profile, ProfileManager
 from singbox_manager import SingboxManager
 from utils import find_singbox
@@ -36,7 +40,7 @@ class Wintermute:
             self.config.cache.directory if self.config.cache.enabled else "./cache"
         )
         self.profile_manager = ProfileManager(
-            cache_dir=cache_dir, use_cache=self.config.cache.enabled
+            cache_dir=cache_dir, use_cache=self.config.cache.enabled, config=config_path
         )
         self.singbox_manager: Optional[SingboxManager] = None
         self.healthchecker: Optional[HealthChecker] = None
@@ -312,7 +316,7 @@ class Wintermute:
         # TODO: check if necessary
         time.sleep(2)
 
-        if self.config.network.ipv4_forward:
+        if self.config.network.ipv4_forward and not proxy_mode:
             # setup iptables
             self._iptables_rules = setup_iptables_rules(
                 interface=self.config.network.interface,

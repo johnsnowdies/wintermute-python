@@ -74,7 +74,7 @@ def setup_iptables_rules(
     rules.append(
         f"ip route add {tun_subnet} dev {tun_interface} table {routing_table_name}"
     )
-    # rules.append(f"ip route add default dev {tun_interface} table {routing_table_name}")
+    rules.append(f"ip route add default dev {tun_interface} table {routing_table_name}")
 
     # 6. Add NAT for traffic from TUN
     rules.append(f"iptables -t nat -A POSTROUTING -o {tun_interface} -j MASQUERADE")
