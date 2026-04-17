@@ -335,9 +335,16 @@ class Wintermute:
             timeout=self.config.testing.timeout,
             failure_threshold=self.config.testing.failure_threshold,
             on_failure_callback=self.on_tunnel_failure,
+            external_fault_callback=self._has_singbox_error_burst,
             initial_delay=self.config.testing.initial_delay,
         )
         self.healthchecker.start()
+
+    def _has_singbox_error_burst(self) -> bool:
+        """Returns True when sing-box reports too many ERROR logs in short period."""
+        if not self.singbox_manager:
+            return False
+        return self.singbox_manager.has_error_burst(threshold=3, window_sec=60)
 
     def on_tunnel_failure(self):
         """Called on tunnel failure detected, autorecovery"""

@@ -1,9 +1,10 @@
+from collections import deque
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Deque, Optional
 
 from logger import get_logger, setup_logger
 
@@ -19,6 +20,23 @@ class SingboxManager:
         self.process: Optional[subprocess.Popen] = None
         self._running = False
         self._log_thread: Optional[threading.Thread] = None
+        self._error_timestamps: Deque[float] = deque()
+        self._error_lock = threading.Lock()
+
+    def _cleanup_error_events(self, now: Optional[float] = None, window_sec: int = 60):
+        """Drop ERROR events outside the rolling window."""
+        if now is None:
+            now = time.time()
+        threshold = now - window_sec
+        while self._error_timestamps and self._error_timestamps[0] < threshold:
+            self._error_timestamps.popleft()
+
+    def _register_error_event(self):
+        """Register sing-box ERROR line in stdout log stream."""
+        now = time.time()
+        with self._error_lock:
+            self._error_timestamps.append(now)
+            self._cleanup_error_events(now=now)
 
     def _log_reader(self):
         """Read and out Sing-Box STDOUT logs"""
@@ -31,6 +49,8 @@ class SingboxManager:
                     break
                 print(f"[sing-box] {line.rstrip()}")
                 sys.stdout.flush()
+                if "ERROR" in line.upper():
+                    self._register_error_event()
         except Exception as e:
             self.logger.error(f"Sing-box log reading error: {e}")
 
@@ -43,6 +63,9 @@ class SingboxManager:
         self.logger.debug(f"Running Sing-Box with config: {self.config_path}")
 
         try:
+            with self._error_lock:
+                self._error_timestamps.clear()
+
             self.process = subprocess.Popen(
                 [self.singbox_path, "run", "-c", str(self.config_path)],
                 stdout=subprocess.PIPE,
@@ -90,6 +113,8 @@ class SingboxManager:
 
         self._running = False
         self.process = None
+        with self._error_lock:
+            self._error_timestamps.clear()
         self.logger.debug("Sing-Box successfully terminated")
 
     def restart(self):
@@ -104,3 +129,13 @@ class SingboxManager:
         if not self.process:
             return False
         return self.process.poll() is None
+
+    def get_error_count(self, window_sec: int = 60) -> int:
+        """Returns count of stdout ERROR messages in the rolling window."""
+        with self._error_lock:
+            self._cleanup_error_events(window_sec=window_sec)
+            return len(self._error_timestamps)
+
+    def has_error_burst(self, threshold: int = 3, window_sec: int = 60) -> bool:
+        """Returns True when stdout ERROR count is greater than threshold in window."""
+        return self.get_error_count(window_sec=window_sec) > threshold

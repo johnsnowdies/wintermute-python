@@ -25,6 +25,7 @@ class HealthChecker:
         timeout: int = 5,
         failure_threshold: int = 3,
         on_failure_callback: Optional[Callable] = None,
+        external_fault_callback: Optional[Callable[[], bool]] = None,
         initial_delay: int = 10,
     ):
         """
@@ -34,6 +35,7 @@ class HealthChecker:
             timeout: request timeout
             failure_threshold: count of failures before callback
             on_failure_callback: callback function
+            external_fault_callback: external fault signal callback
             initial_delay: delay before first attempt
         """
         self.check_urls = check_urls
@@ -41,6 +43,7 @@ class HealthChecker:
         self.timeout = timeout
         self.failure_threshold = failure_threshold
         self.on_failure_callback = on_failure_callback
+        self.external_fault_callback = external_fault_callback
         self.initial_delay = initial_delay
 
         self._running = False
@@ -94,38 +97,55 @@ class HealthChecker:
 
         while self._running:
             try:
-                is_ok = self._check_connection()
+                connection_ok = self._check_connection()
+                external_fault = False
+                if self.external_fault_callback:
+                    try:
+                        external_fault = self.external_fault_callback()
+                    except Exception as e:
+                        self.logger.error(f"External fault callback error: {e}")
+
+                is_ok = connection_ok and not external_fault
                 self._last_check_time = time.time()
 
                 if is_ok:
                     if not self._last_status:
+                        self.logger.info("Tunnel recovered")
                         self._last_status = True
                     self._failure_count = 0
-                    if self._failure_count == 0:
-                        self.logger.info("Tunnel healthy")
                 else:
-                    self._failure_count += 1
-                    self.logger.warn(
-                        f"Detected fault ({self._failure_count}/{self.failure_threshold})"
-                    )
-
-                    if (
-                        self._failure_count >= self.failure_threshold
-                        and self._last_status
-                    ):
-                        # Tunnel is down
-                        self.logger.error(
-                            f"Tunnel failed for {self._failure_count} times!"
+                    # Count faults only while transitioning from healthy to failed.
+                    # Once in DOWN state, keep the counter capped at threshold.
+                    if self._last_status:
+                        self._failure_count += 1
+                        reasons = []
+                        if not connection_ok:
+                            reasons.append("healthcheck")
+                        if external_fault:
+                            reasons.append("sing-box ERROR burst")
+                        reasons_text = ", ".join(reasons) if reasons else "unknown"
+                        self.logger.warn(
+                            f"Detected fault ({self._failure_count}/{self.failure_threshold}) [{reasons_text}]"
                         )
-                        self._last_status = False
 
-                        # Вызываем callback
-                        if self.on_failure_callback:
-                            try:
-                                self.on_failure_callback()
-                                self._failure_count = 0
-                            except Exception as e:
-                                self.logger.error(f"Callback error: {e}")
+                        if self._failure_count >= self.failure_threshold:
+                            # Tunnel is down
+                            self.logger.error(
+                                f"Tunnel failed for {self._failure_count} times!"
+                            )
+                            self._last_status = False
+
+                            # Вызываем callback
+                            if self.on_failure_callback:
+                                try:
+                                    self.on_failure_callback()
+                                    self._failure_count = 0
+                                except Exception as e:
+                                    self.logger.error(f"Callback error: {e}")
+                    else:
+                        self._failure_count = min(
+                            self._failure_count, self.failure_threshold
+                        )
 
             except Exception as e:
                 self.logger.error(f"HealthChecker general error: {e}")
