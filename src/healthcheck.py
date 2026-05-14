@@ -33,7 +33,7 @@ class HealthChecker:
             check_urls: List of URLs to check
             check_interval: in seconds
             timeout: request timeout
-            failure_threshold: count of failures before callback
+            failure_threshold: allowed failures per minute before callback
             on_failure_callback: callback function
             external_fault_callback: external fault signal callback
             initial_delay: delay before first attempt
@@ -49,6 +49,7 @@ class HealthChecker:
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._failure_count = 0
+        self._failure_window_start = time.monotonic()
         self._last_check_time = 0
         self._last_status = True
         self._first_check = True
@@ -63,7 +64,7 @@ class HealthChecker:
 
         self._running = True
         self._failure_count = 0
-        self._first_check = True
+        self._failure_window_start = time.monotonic()
         self._thread = threading.Thread(target=self._check_loop, daemon=True)
         self._thread.start()
         self.logger.info(
@@ -97,6 +98,11 @@ class HealthChecker:
 
         while self._running:
             try:
+                now = time.monotonic()
+                if now - self._failure_window_start >= 60:
+                    self._failure_count = 0
+                    self._failure_window_start = now
+
                 connection_ok = self._check_connection()
                 external_fault = False
                 if self.external_fault_callback:
@@ -114,8 +120,6 @@ class HealthChecker:
                         self._last_status = True
                     self._failure_count = 0
                 else:
-                    # Count faults only while transitioning from healthy to failed.
-                    # Once in DOWN state, keep the counter capped at threshold.
                     if self._last_status:
                         self._failure_count += 1
                         reasons = []
@@ -125,17 +129,15 @@ class HealthChecker:
                             reasons.append("sing-box ERROR burst")
                         reasons_text = ", ".join(reasons) if reasons else "unknown"
                         self.logger.warn(
-                            f"Detected fault ({self._failure_count}/{self.failure_threshold}) [{reasons_text}]"
+                            f"Detected fault ({self._failure_count} in current minute / allowed {self.failure_threshold}) [{reasons_text}]"
                         )
 
-                        if self._failure_count >= self.failure_threshold:
-                            # Tunnel is down
+                        if self._failure_count > self.failure_threshold:
                             self.logger.error(
-                                f"Tunnel failed for {self._failure_count} times!"
+                                f"Tunnel failed after {self._failure_count} failures in the last minute!"
                             )
                             self._last_status = False
 
-                            # Вызываем callback
                             if self.on_failure_callback:
                                 try:
                                     self.on_failure_callback()
