@@ -1,4 +1,5 @@
 import threading
+import time
 import re
 from datetime import datetime
 from typing import Optional
@@ -271,7 +272,13 @@ class UI:
 
     def set_mode(self, mode: str):
         with self.lock:
-            self.mode = mode
+            if self.mode != mode:
+                # Reset uptime when entering TESTING or WORKING mode
+                # But don't reset when returning from HEALTHCHECK to WORKING
+                if mode in ["TESTING", "WORKING"]:
+                    if not (self.mode == "HEALTHCHECK" and mode == "WORKING"):
+                        self.start_time = datetime.now()
+                self.mode = mode
         if self.live:
             self.update_render()
 
@@ -371,19 +378,42 @@ class UI:
         if self.live:
             self.update_render()
 
+    def _refresh_task(self):
+        """Background task to refresh UI (for uptime counter)"""
+        while not self._stop_event.is_set():
+            if self.live:
+                try:
+                    self.update_render()
+                except Exception:
+                    pass
+            time.sleep(1)
+
     def start(self, screen: bool = True):
         self.update_render()
         self.live = Live(self.layout, console=self.console, refresh_per_second=4, screen=screen)
         self.live.start()
 
+        # Start periodic refresh thread
+        self._stop_event = threading.Event()
+        self._refresh_thread = threading.Thread(target=self._refresh_task, daemon=True)
+        self._refresh_thread.start()
+
     def stop(self):
+        if hasattr(self, "_stop_event"):
+            self._stop_event.set()
+        if hasattr(self, "_refresh_thread"):
+            try:
+                self._refresh_thread.join(timeout=1)
+            except Exception:
+                pass
+
         if self.live:
             self.live.stop()
             self.live = None
 
 ui_instance: Optional[UI] = None
 
-def get_ui(config_path) -> UI:
+def get_ui(config_path: str = "config.yaml") -> UI:
     global ui_instance
     if ui_instance is None:
         ui_instance = UI(config_path)
