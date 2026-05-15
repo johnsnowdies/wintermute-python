@@ -43,6 +43,7 @@ class Wintermute:
                 level=self.config.logging.level,
                 log_format=self.config.logging.format,
                 log_file=self.config.logging.file,
+                file_level=self.config.logging.file_level,
             )
 
         self.logger = get_logger(__name__)
@@ -493,6 +494,15 @@ class Wintermute:
 
         return True
 
+    def _get_core_log_path(self, core_name: str) -> Optional[str]:
+        """Get path for core log file based on main log file location"""
+        if not self.config.logging.file:
+            return None
+        log_dir = os.path.dirname(self.config.logging.file)
+        if not log_dir:
+            return f"{core_name}.log"
+        return os.path.join(log_dir, f"{core_name}.log")
+
     def setup_singbox(
         self,
         profile: Optional[Profile] = None,
@@ -527,7 +537,13 @@ class Wintermute:
                 self.logger.error("No xray found at your system.")
                 return False
 
-            self.xray_manager = XrayManager(xray_path, config_path, ui=self.ui if not self.test_mode else None)
+            xray_log = self._get_core_log_path("xray")
+            self.xray_manager = XrayManager(
+                xray_path,
+                config_path,
+                ui=self.ui if not self.test_mode else None,
+                log_file=xray_log,
+            )
             if not self.xray_manager.start():
                 return False
 
@@ -559,7 +575,13 @@ class Wintermute:
                 )
                 return False
 
-            self.singbox_manager = SingboxManager(singbox_path, config_path, ui=self.ui if not self.test_mode else None)
+            singbox_log = self._get_core_log_path("singbox")
+            self.singbox_manager = SingboxManager(
+                singbox_path,
+                config_path,
+                ui=self.ui if not self.test_mode else None,
+                log_file=singbox_log,
+            )
             if not self.singbox_manager.start():
                 return False
 

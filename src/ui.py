@@ -10,6 +10,7 @@ from rich.panel import Panel
 from rich.text import Text
 from rich.progress import ProgressBar
 from rich.logging import RichHandler
+from rich.cells import cell_len
 import logging
 
 class UI:
@@ -53,13 +54,18 @@ class UI:
         self.progress_current = 0
         self.progress_total = 0
 
+    def _clean_text(self, text: str) -> str:
+        if not text:
+            return ""
+        # Keep letters, digits, spaces and common punctuation/symbols
+        # Pattern includes characters needed for Rich markup and common log output
+        pattern = r'[^a-zA-Z0-9а-яА-ЯёЁ\s\-\.\_\(\)\[\]\:\/\,\!\?\+\=\*\&\%\#\@\<\>\;\"\'\^]'
+        return re.sub(pattern, '', text)
+
     def _clean_name(self, name: str) -> str:
         if not name:
             return ""
-        # Remove characters that are likely emojis or "junk"
-        # Keep word characters (including unicode), spaces, and basic punctuation
-        cleaned = re.sub(r'[^\w\s\.,\-_\[\]\(\)\+\/\!\?]', '', name)
-        # Also handle multiple spaces that might result from removal
+        cleaned = self._clean_text(name)
         cleaned = re.sub(r'\s+', ' ', cleaned)
         return cleaned.strip()
 
@@ -93,12 +99,12 @@ class UI:
         profile_str = f" Profile: {self.profile_name} "
         health_str = f" Health: {self.health_status} "
 
-        padding_center = (console_width - len(self.mode) - 2 - len(profile_str)) // 2
+        padding_center = (console_width - cell_len(self.mode) - 2 - cell_len(profile_str)) // 2
         if padding_center > 0:
             footer_content.append(" " * padding_center)
         footer_content.append(profile_text)
 
-        padding_right = console_width - len(footer_content) - len(health_str)
+        padding_right = console_width - cell_len(footer_content.plain) - cell_len(health_str)
         if padding_right > 0:
             footer_content.append(" " * padding_right)
         footer_content.append(health_text)
@@ -156,9 +162,39 @@ class UI:
 
         # 4) Test Results
         if self.test_results:
-            content.append("Test Results:\n", style="bold magenta")
-            # Show top 10 results
-            for p in self.test_results[:10]:
+            total_results = len(self.test_results)
+
+            # Calculate available height for test results
+            # Usable height is console height minus:
+            # - footer (1)
+            # - panel borders (2)
+            usable_height = self.console.height - 3
+
+            # Lines taken by other sections
+            taken_lines = 0
+            if self.mode == "TESTING" and self.progress_total > 0:
+                taken_lines += 3
+            taken_lines += 3 # Uptime
+            if self.sources:
+                taken_lines += len(self.sources) + 2
+            if self.mode == "WORKING":
+                taken_lines += 2
+            if self.last_update:
+                taken_lines += 2
+            taken_lines += 1 # Test Results header
+
+            display_count = usable_height - taken_lines
+
+            # If we need to show "and X more", it takes one more line
+            if total_results > display_count and display_count > 0:
+                display_count -= 1
+
+            if display_count < 1:
+                display_count = 1 # Show at least one if possible
+
+            content.append(f"Test Results ({total_results}):\n", style="bold magenta")
+            # Show top results
+            for p in self.test_results[:display_count]:
                 name = self._clean_name(p.comment or p.host)
                 is_current = name == self.profile_name
 
@@ -179,13 +215,16 @@ class UI:
                 prefix = "> " if is_current else "  "
 
                 # Calculate space for name
-                # available = status_width - len(prefix) - len(ping_str) - 1 (min space)
-                max_name_len = status_width - len(prefix) - len(ping_str) - 1
-                if len(name) > max_name_len:
-                    name = name[:max_name_len-3] + "..."
+                # available = status_width - cell_len(prefix) - cell_len(ping_str) - 1 (min space)
+                max_name_len = status_width - cell_len(prefix) - cell_len(ping_str) - 1
+                if cell_len(name) > max_name_len:
+                    # Text.truncate uses cell length
+                    t_name = Text(name)
+                    t_name.truncate(max_name_len - 3)
+                    name = t_name.plain + "..."
 
                 # Padding to right-align ping
-                padding_len = status_width - len(prefix) - len(name) - len(ping_str)
+                padding_len = status_width - cell_len(prefix) - cell_len(name) - cell_len(ping_str)
                 if padding_len < 1: padding_len = 1
                 padding = " " * padding_len
 
@@ -196,6 +235,9 @@ class UI:
                 line.append(ping_str, style=ping_style)
                 content.append(line)
                 content.append("\n")
+
+            if total_results > display_count:
+                content.append(f"  ... and {total_results - display_count} more\n", style="dim")
 
         items.append(content)
         return Panel(Group(*items), title="Status", border_style="green")
@@ -210,7 +252,7 @@ class UI:
     def set_status_data(self, sources=None, last_update=None, test_results=None):
         with self.lock:
             if sources is not None:
-                self.sources = sources
+                self.sources = [self._clean_name(s) for s in sources]
             if last_update is not None:
                 self.last_update = last_update
             if test_results is not None:
@@ -251,7 +293,34 @@ class UI:
             self.update_render()
 
     def add_app_log(self, message: str):
+        # Calculate available width (70% for left panel minus borders/padding)
+        width = int(self.console.width * 0.7) - 4
+        if width < 10: width = 10
+
         with self.lock:
+            # Handle multiple lines if present
+            lines = message.splitlines()
+            truncated_lines = []
+            for line in lines:
+                line = self._clean_text(line)
+                try:
+                    t = Text.from_markup(line)
+                    if t.cell_len > width:
+                        t.truncate(width - 3)
+                        t.append("...")
+                        truncated_lines.append(t.markup)
+                    else:
+                        truncated_lines.append(line)
+                except Exception:
+                    # Fallback for invalid markup
+                    if cell_len(line) > width:
+                        t = Text(line)
+                        t.truncate(width - 3)
+                        truncated_lines.append(t.plain + "...")
+                    else:
+                        truncated_lines.append(line)
+
+            message = "\n".join(truncated_lines)
             self.app_logs.append(message)
             if len(self.app_logs) > self.max_logs:
                 self.app_logs.pop(0)
@@ -259,7 +328,34 @@ class UI:
             self.update_render()
 
     def add_core_log(self, message: str):
+        # Calculate available width (70% for left panel minus borders/padding)
+        width = int(self.console.width * 0.7) - 4
+        if width < 10: width = 10
+
         with self.lock:
+            # Handle multiple lines if present
+            lines = message.splitlines()
+            truncated_lines = []
+            for line in lines:
+                line = self._clean_text(line)
+                try:
+                    t = Text.from_markup(line)
+                    if t.cell_len > width:
+                        t.truncate(width - 3)
+                        t.append("...")
+                        truncated_lines.append(t.markup)
+                    else:
+                        truncated_lines.append(line)
+                except Exception:
+                    # Fallback for invalid markup
+                    if cell_len(line) > width:
+                        t = Text(line)
+                        t.truncate(width - 3)
+                        truncated_lines.append(t.plain + "...")
+                    else:
+                        truncated_lines.append(line)
+
+            message = "\n".join(truncated_lines)
             self.core_logs.append(message)
             if len(self.core_logs) > self.max_logs:
                 self.core_logs.pop(0)

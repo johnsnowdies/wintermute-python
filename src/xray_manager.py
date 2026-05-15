@@ -12,11 +12,12 @@ from logger import get_logger
 class XrayManager:
     """Xray-core process manager class"""
 
-    def __init__(self, xray_path: str, config_path: Path, ui: Optional[Any] = None):
+    def __init__(self, xray_path: str, config_path: Path, ui: Optional[Any] = None, log_file: Optional[str] = None):
         self.logger = get_logger(__name__)
         self.xray_path = xray_path
         self.config_path = config_path
         self.ui = ui
+        self.log_file = log_file
         self.process: Optional[subprocess.Popen] = None
         self._running = False
         self._log_thread: Optional[threading.Thread] = None
@@ -43,19 +44,36 @@ class XrayManager:
         if not self.process or not self.process.stdout:
             return
 
+        log_f = None
+        if self.log_file:
+            try:
+                log_f = open(self.log_file, "a", encoding="utf-8")
+            except Exception as e:
+                self.logger.error(f"Failed to open xray log file {self.log_file}: {e}")
+
         try:
             for line in iter(self.process.stdout.readline, ""):
                 if not line:
                     break
+
+                stripped_line = line.rstrip()
                 if self.ui:
-                    self.ui.add_core_log(f"[xray] {line.rstrip()}")
+                    self.ui.add_core_log(f"[xray] {stripped_line}")
                 else:
-                    print(f"[xray] {line.rstrip()}")
+                    print(f"[xray] {stripped_line}")
                     sys.stdout.flush()
+
+                if log_f:
+                    log_f.write(line)
+                    log_f.flush()
+
                 if "ERROR" in line.upper() or "FAILED" in line.upper():
                     self._register_error_event()
         except Exception as e:
             self.logger.error(f"Xray log reading error: {e}")
+        finally:
+            if log_f:
+                log_f.close()
 
     def start(self):
         """Launching Xray"""

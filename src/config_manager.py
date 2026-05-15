@@ -28,7 +28,8 @@ def parse_time_interval(interval: str) -> int:
 class LoggingConfig:
     level: str
     format: str
-    file: str
+    file: Optional[str]
+    file_level: str = "debug"
 
 
 @dataclass
@@ -132,12 +133,13 @@ class ConfigManager:
 
         # Logging
         log = data.get("logging", {})
-        logging = LoggingConfig(
+        logging_cfg = LoggingConfig(
             level=log.get("level", "info"),
             format=log.get(
-                "format", "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+                "format", "%(asctime)s %(levelname)s: %(message)s"
             ),
-            file=log.get("file", None),
+            file=log.get("file"),
+            file_level=log.get("file_level", "debug"),
         )
 
         # Network
@@ -196,7 +198,7 @@ class ConfigManager:
             testing=testing,
             selection=selection,
             cache=cache,
-            logging=logging,
+            logging=logging_cfg,
         )
 
         return self.config

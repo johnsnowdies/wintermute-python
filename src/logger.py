@@ -30,6 +30,7 @@ def setup_logger(
     level: str = "info",
     log_format: str = "%(asctime)s %(levelname)s: %(message)s",
     log_file: Optional[str] = None,
+    file_level: str = "debug",
     ui: Optional[Any] = None,
 ) -> logging.Logger:
     """
@@ -40,6 +41,7 @@ def setup_logger(
         level: Log level (debug, info, warning, error)
         log_format: Log message format
         log_file: Optional log file path (None for stdout)
+        file_level: Log level for file (debug, info, warning, error)
         ui: Optional UI object for logging to UI
 
     Returns:
@@ -56,7 +58,10 @@ def setup_logger(
         "critical": logging.CRITICAL,
     }
     log_level = level_map.get(level.lower(), logging.INFO)
-    logger.setLevel(log_level)
+    f_level = level_map.get(file_level.lower(), logging.DEBUG)
+
+    # Set logger level to the minimum of all required levels
+    logger.setLevel(min(log_level, f_level))
 
     # Remove existing handlers
     logger.handlers.clear()
@@ -79,8 +84,14 @@ def setup_logger(
         logger.addHandler(ui_handler)
 
     if log_file:
+        import os
+        # Ensure directory exists
+        log_dir = os.path.dirname(log_file)
+        if log_dir:
+            os.makedirs(log_dir, exist_ok=True)
+
         file_handler = logging.FileHandler(log_file, encoding="utf-8")
-        file_handler.setLevel(log_level)
+        file_handler.setLevel(f_level)
         file_handler.setFormatter(plain_formatter)
         logger.addHandler(file_handler)
 
