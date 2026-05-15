@@ -36,6 +36,15 @@ class Wintermute:
     ):
         self.config_manager = ConfigManager(config_path)
         self.config = self.config_manager.load()
+
+        # Initial logging setup (root logger)
+        if not test_mode:
+            setup_logger(
+                level=self.config.logging.level,
+                log_format=self.config.logging.format,
+                log_file=self.config.logging.file,
+            )
+
         self.logger = get_logger(__name__)
         self.test_mode = test_mode
 
@@ -431,7 +440,7 @@ class Wintermute:
 
     def load_and_select_profile(self) -> bool:
         """Load profiles and select the best"""
-        self.logger.info("Loading and Profile testing")
+        self.logger.info("Loading profiles and starting tests...")
 
         # Loading profiles or fallback to cache
         count = self.profile_manager.load_profiles_from_sources(
@@ -495,7 +504,8 @@ class Wintermute:
 
         # Decide which engine to use
         use_xray = profile.extra.get("type") == "xhttp"
-        self.ui.set_core_type("xray" if use_xray else "sing-box")
+        if not self.test_mode:
+            self.ui.set_core_type("xray" if use_xray else "sing-box")
 
         # Creating configuration
         outbound = self._create_singbox_outbound(profile)
@@ -514,7 +524,7 @@ class Wintermute:
                 self.logger.error("No xray found at your system.")
                 return False
 
-            self.xray_manager = XrayManager(xray_path, config_path, ui=self.ui)
+            self.xray_manager = XrayManager(xray_path, config_path, ui=self.ui if not self.test_mode else None)
             if not self.xray_manager.start():
                 return False
 
@@ -546,12 +556,12 @@ class Wintermute:
                 )
                 return False
 
-            self.singbox_manager = SingboxManager(singbox_path, config_path, ui=self.ui)
+            self.singbox_manager = SingboxManager(singbox_path, config_path, ui=self.ui if not self.test_mode else None)
             if not self.singbox_manager.start():
                 return False
 
         # TODO: check if necessary
-        time.sleep(2)
+        time.sleep(2 if not self.test_mode else 0.5)
 
         if self.config.network.ipv4_forward and not proxy_mode:
             # setup iptables
@@ -618,6 +628,7 @@ class Wintermute:
             # Setup and start Sing-Box
             if self.setup_singbox():
                 self.logger.warning("RESOLVED")
+                self.logger.info("Switched to WORKING mode")
                 self.ui.set_mode("WORKING")
                 return
 
@@ -625,6 +636,7 @@ class Wintermute:
         self.logger.warning("NO SUCCESS WITH BACKUP PROFILES, TESTING PROFILES")
         if self.load_and_select_profile():
             if self.setup_singbox():
+                self.logger.info("Switched to WORKING mode")
                 self.ui.set_mode("WORKING")
 
     def start_profile_refresh(self):
@@ -664,7 +676,6 @@ class Wintermute:
         self.ui.set_mode("TESTING")
 
         setup_logger(
-            name=__name__,
             level=self.config.logging.level,
             log_format=self.config.logging.format,
             log_file=self.config.logging.file,
@@ -672,9 +683,7 @@ class Wintermute:
         )
 
         self.logger = get_logger(__name__)
-        self.logger.info("=" * 80)
         self.logger.info("Wintermute")
-        self.logger.info("=" * 80)
 
         # Check for root
         if os.geteuid() != 0:
@@ -694,6 +703,7 @@ class Wintermute:
                     self.ui.set_profile(selected.comment or selected.host)
                 # Setup and start Sing-Box
                 if self.setup_singbox():
+                    self.logger.info("Switched to WORKING mode")
                     self.ui.set_mode("WORKING")
                     break
 

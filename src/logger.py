@@ -4,8 +4,8 @@ from typing import Optional, Any
 
 
 def setup_logger(
-    name: str,
-    level: str = "debug",
+    name: Optional[str] = None,
+    level: str = "info",
     log_format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     log_file: Optional[str] = None,
     ui: Optional[Any] = None,
@@ -14,10 +14,11 @@ def setup_logger(
     Setup logger with given configuration
 
     Args:
-        name: Logger name
+        name: Logger name (None for root logger)
         level: Log level (debug, info, warning, error)
         log_format: Log message format
         log_file: Optional log file path (None for stdout)
+        ui: Optional UI object for logging to UI
 
     Returns:
         Configured logger
@@ -41,18 +42,26 @@ def setup_logger(
     # Create formatter
     formatter = logging.Formatter(log_format)
 
-    # Setup handler (file or stdout)
+    # Setup handlers
     if ui:
         from ui import UILogHandler
-        handler = UILogHandler(ui)
-    elif log_file:
-        handler = logging.FileHandler(log_file, encoding="utf-8")
-    else:
-        handler = logging.StreamHandler(sys.stdout)
+        ui_handler = UILogHandler(ui)
+        ui_handler.setLevel(log_level)
+        ui_handler.setFormatter(formatter)
+        logger.addHandler(ui_handler)
 
-    handler.setLevel(log_level)
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
+    if log_file:
+        file_handler = logging.FileHandler(log_file, encoding="utf-8")
+        file_handler.setLevel(log_level)
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+
+    # Use stdout only if UI is not active to avoid conflicts with rich.live
+    if not ui:
+        stream_handler = logging.StreamHandler(sys.stdout)
+        stream_handler.setLevel(log_level)
+        stream_handler.setFormatter(formatter)
+        logger.addHandler(stream_handler)
 
     return logger
 

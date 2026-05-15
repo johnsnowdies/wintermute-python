@@ -13,7 +13,7 @@ import requests
 import urllib3
 from requests.exceptions import RequestException
 
-from logger import get_logger, setup_logger
+from logger import get_logger
 from utils import decode_b64_if_valid
 
 
@@ -41,7 +41,6 @@ class ProfileCache:
     """Profile's cache"""
 
     def __init__(self, cache_dir: Optional[str] = None):
-        setup_logger(__name__)
         self.logger = get_logger(__name__)
         if cache_dir:
             self.cache_dir = Path(cache_dir)
@@ -128,7 +127,6 @@ class ProfileLoader:
 
     def __init__(self, cache_dir: Optional[str] = None, use_cache: bool = True):
         self.cache = ProfileCache(cache_dir) if use_cache else None
-        setup_logger(__name__)
         self.logger = get_logger(__name__)
 
     def load_from_url(
@@ -168,8 +166,8 @@ class ProfileLoader:
                     if not profile_filter or profile_filter in line:
                         profiles.append(line)
 
-            self.logger.info(f"URL: {url}:")
-            self.logger.info(f"   Profiles found: {len(profiles)}")
+            self.logger.debug(f"URL: {url}:")
+            self.logger.debug(f"   Profiles found: {len(profiles)}")
 
             # Save cache
             if self.cache and profiles:
@@ -293,7 +291,6 @@ class ProfileParser:
             )
 
         except Exception as e:
-            setup_logger(__name__)
             logger = get_logger(__name__)
             logger.error(f"VLESS profile parse error: {e}")
             return None
@@ -348,7 +345,6 @@ class ProfileParser:
             )
 
         except Exception as e:
-            setup_logger(__name__)
             logger = get_logger(__name__)
             logger.error(f"ShadowSocks profile parse error: {e}")
             return None
@@ -373,13 +369,13 @@ class ProfileTester:
     ) -> Tuple[bool, Optional[int]]:
         from wintermute import Wintermute
 
-        setup_logger(__name__)
         logger = get_logger(__name__)
 
         client = Wintermute(test_mode=True, config_path=config)
         client.setup_singbox(profile, proxy_mode=True, proxy_port=proxy_port)
 
-        time.sleep(10)
+        # Wait for sing-box to start (setup_singbox already has 2s sleep)
+        time.sleep(1)
 
         success = False
         latency = None
@@ -479,7 +475,6 @@ class ProfileTester:
         config: str = "config.yaml",
     ) -> Optional[Profile]:
         """Asynchronous testing of a single profile"""
-        setup_logger(__name__)
         logger = get_logger(__name__)
         logger.debug(
             f"[{idx+1:2d}] {profile.host}:{profile.port} ({profile.protocol.upper()})..."
@@ -509,10 +504,10 @@ class ProfileTester:
         profile.last_tested = time.time()
 
         if success:
-            logger.info(f"Profile {profile.comment} result is {latency}ms")
+            logger.debug(f"Profile {profile.comment} result is {latency}ms")
             return profile
         else:
-            logger.info(f"Profile {profile.comment} not available")
+            logger.debug(f"Profile {profile.comment} not available")
             return None
 
     @staticmethod
@@ -525,7 +520,6 @@ class ProfileTester:
         on_progress: Optional[Callable[[int, int], None]] = None,
     ) -> List[Profile]:
         """Asynchronous profile testing"""
-        setup_logger(__name__)
         logger = get_logger(__name__)
         total_to_test = min(len(profiles), max_test)
         logger.info(f"Testing {total_to_test} profiles...")
@@ -550,6 +544,11 @@ class ProfileTester:
             res = await coro
             results.append(res)
             completed += 1
+            if res:
+                logger.info(f"   [{completed}/{total_to_test}] Profile {res.comment or res.host} OK ({res.latency}ms)")
+            else:
+                logger.debug(f"   [{completed}/{total_to_test}] Profile test failed")
+
             if on_progress:
                 on_progress(completed, total_to_test)
 
@@ -602,7 +601,6 @@ class ProfileManager:
         self._sources = []
         self._refresh_callback: Optional[Callable] = None
         self.config = config
-        setup_logger(__name__)
         self.logger = get_logger(__name__)
 
     def load_profiles_from_sources(
@@ -634,6 +632,7 @@ class ProfileManager:
                 if profile:
                     self.profiles.append(profile)
 
+        self.logger.info(f"Loaded {len(self.profiles)} profiles total")
         return len(self.profiles)
 
     def start_auto_refresh(
@@ -736,7 +735,6 @@ class ProfileManager:
                     best = p
                     break
 
-        self.logger.info("=" * 80)
 
         if best.latency and best.latency <= min_latency:
             self.logger.info("Profile picked")
@@ -745,12 +743,11 @@ class ProfileManager:
                 f"   {best.protocol.upper()} {best.host}:{best.port} [{best.latency}ms]"
             )
         else:
-            self.logger.info("High latency profile selected (still the best one):")
+            self.logger.warning("High latency profile selected (still the best one):")
             self.logger.info(f"   {best.comment}")
             self.logger.info(
                 f"   {best.protocol.upper()} {best.host}:{best.port} [{best.latency}ms]"
             )
-        self.logger.info("=" * 80)
 
         with self._lock:
             self.selected_profile = best

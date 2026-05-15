@@ -6,7 +6,7 @@ from typing import Callable, List, Optional
 import requests
 import urllib3
 
-from logger import get_logger, setup_logger
+from logger import get_logger
 
 
 # Disable cert warnings
@@ -59,7 +59,6 @@ class HealthChecker:
         self._last_check_time = 0
         self._last_status = True
         self._first_check = True
-        setup_logger(name=__name__)
         self.logger = get_logger(__name__)
 
     def start(self):

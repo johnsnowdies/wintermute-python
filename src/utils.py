@@ -3,7 +3,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
-from logger import get_logger, setup_logger
+from logger import get_logger
 
 
 def find_singbox() -> Optional[str]:
@@ -38,7 +38,6 @@ def decode_b64_if_valid(s: str) -> Optional[str]:
             s += "=" * (4 - missing_padding)
         return base64.b64decode(s).decode("utf-8")
     except Exception as e:
-        setup_logger(__name__)
         logger = get_logger(__name__)
         logger.debug(f"_decode_b64_if_valid general error: {e}")
         return None

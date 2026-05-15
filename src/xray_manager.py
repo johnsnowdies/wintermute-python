@@ -6,14 +6,13 @@ import time
 from pathlib import Path
 from typing import Deque, Optional, Any
 
-from logger import get_logger, setup_logger
+from logger import get_logger
 
 
 class XrayManager:
     """Xray-core process manager class"""
 
     def __init__(self, xray_path: str, config_path: Path, ui: Optional[Any] = None):
-        setup_logger(__name__, ui=ui)
         self.logger = get_logger(__name__)
         self.xray_path = xray_path
         self.config_path = config_path

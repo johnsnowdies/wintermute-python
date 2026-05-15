@@ -6,14 +6,13 @@ import time
 from pathlib import Path
 from typing import Deque, Optional, Any
 
-from logger import get_logger, setup_logger
+from logger import get_logger
 
 
 class SingboxManager:
     """Sing-Box process manager class"""
 
     def __init__(self, singbox_path: str, config_path: Path, ui: Optional[Any] = None):
-        setup_logger(__name__, ui=ui)
         self.logger = get_logger(__name__)
         self.singbox_path = singbox_path
         self.config_path = config_path

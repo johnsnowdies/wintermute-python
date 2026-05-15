@@ -2,7 +2,7 @@ import subprocess
 import socket
 from typing import List, Optional
 
-from logger import get_logger, setup_logger
+from logger import get_logger
 
 
 def get_default_gateway() -> Optional[str]:
@@ -39,7 +39,6 @@ def setup_linux_tun_routing(
     Sets up routing for TUN interface on Linux manually (as Xray doesn't do it automatically)
     """
     rules = []
-    setup_logger(name=__name__)
     logger = get_logger(__name__)
 
     logger.info(f"Setting up manual TUN routing for {tun_interface}...")
@@ -94,7 +93,6 @@ def setup_iptables_rules(
     """
     rules = []
 
-    setup_logger(name=__name__)
     logger = get_logger(__name__)
     logger.info("Setting up iptables rules...")
     logger.info(f"   Interface: {interface} -> {tun_interface}")
@@ -200,7 +198,6 @@ def cleanup_iptables_rules(rules: List[str]):
     Args:
         rules: List of rules to delete
     """
-    setup_logger(name=__name__)
     logger = get_logger(__name__)
     logger.info("cleaning iptables and iproute2 rules")
 
