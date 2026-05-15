@@ -10,6 +10,7 @@ from rich.layout import Layout
 from rich.live import Live
 from rich.panel import Panel
 from rich.text import Text
+from rich.align import Align
 from rich.progress import ProgressBar
 from rich.logging import RichHandler
 from rich.cells import cell_len
@@ -78,6 +79,9 @@ class UI:
         self.show_manual = False
         self.selected_profile_index = 0
         self.manual_callback = None
+        self.show_message_modal = False
+        self.modal_title = ""
+        self.modal_message = ""
 
     def _clean_text(self, text: str) -> str:
         if not text:
@@ -295,6 +299,8 @@ class UI:
                 self.layout["body"].update(self._get_help_panel())
             elif self.show_manual:
                 self.layout["body"].update(self._get_manual_panel())
+            elif self.show_message_modal:
+                self.layout["body"].update(self._get_message_panel())
             else:
                 self.layout["body"].update(self.main_layout)
                 self.main_layout["left"]["app"].update(self._get_panel(self.app_logs, "Application Logs"))
@@ -433,7 +439,9 @@ class UI:
         header.append("[F6]", style="bold cyan")
         header.append(" Switch  ", style="white")
         header.append("[F7]", style="bold cyan")
-        header.append(" Retest", style="white")
+        header.append(" Retest  ", style="white")
+        header.append("[F8]", style="bold cyan")
+        header.append(" USB", style="white")
         return header
 
     def _get_help_panel(self):
@@ -448,7 +456,9 @@ class UI:
         help_text.append(" [F6] ", style="bold cyan")
         help_text.append("- Switch to the next best profile (current marked as broken)\n")
         help_text.append(" [F7] ", style="bold cyan")
-        help_text.append("- Clear broken profiles and start full re-test\n\n")
+        help_text.append("- Clear broken profiles and start full re-test\n")
+        help_text.append(" [F8] ", style="bold cyan")
+        help_text.append("- Load profiles from USB drive (profile_*.json)\n\n")
         help_text.append(" [Arrows] ", style="bold cyan")
         help_text.append("- Navigate in manual selection mode\n")
         help_text.append(" [Enter] ", style="bold cyan")
@@ -464,8 +474,29 @@ class UI:
             self.show_help = not self.show_help
             if self.show_help:
                 self.show_manual = False
+                self.show_message_modal = False
         if self.live:
             self.update_render()
+
+    def show_message(self, title: str, message: str):
+        with self.lock:
+            self.modal_title = title
+            self.modal_message = message
+            self.show_message_modal = True
+            self.show_help = False
+            self.show_manual = False
+        if self.live:
+            self.update_render()
+
+    def _get_message_panel(self):
+        content = Text()
+        content.append(f"\n {self.modal_message}\n\n", style="bold white")
+        content.append(" Press Enter to close", style="dim")
+        return Panel(
+            Align.center(content, vertical="middle"),
+            title=self.modal_title,
+            border_style="bold yellow"
+        )
 
     def toggle_manual(self, callback=None):
         with self.lock:
@@ -474,6 +505,7 @@ class UI:
             self.show_manual = not self.show_manual
             if self.show_manual:
                 self.show_help = False
+                self.show_message_modal = False
                 self.manual_callback = callback
                 # Set initial selection to current profile if found
                 self.selected_profile_index = 0
@@ -588,8 +620,13 @@ class UI:
         elif key in self.hotkeys:
             callback = self.hotkeys[key]
             if callback:
+                def safe_callback():
+                    try:
+                        callback()
+                    except Exception as e:
+                        logging.error(f"Error in hotkey {key} callback: {e}")
                 # Run callback in a separate thread to not block input loop
-                threading.Thread(target=callback, daemon=True).start()
+                threading.Thread(target=safe_callback, daemon=True).start()
 
     def _input_task(self):
         if not HAS_TERMIOS:
@@ -629,6 +666,9 @@ class UI:
                     # F7 sequences
                     elif any(f7 in data for f7 in ['\x1b[18~', '\x1bOV', '\x1b[18;2~', '\x1b[18;5~']):
                         self._handle_hotkey("F7")
+                    # F8 sequences
+                    elif any(f8 in data for f8 in ['\x1b[19~', '\x1bOW', '\x1b[19;2~', '\x1b[19;5~']):
+                        self._handle_hotkey("F8")
                     # Navigation and selection
                     elif self.show_manual:
                         if any(up in data for up in ['\x1b[A', 'k']): # Up or 'k'
@@ -652,6 +692,13 @@ class UI:
                             if callback and profile:
                                 threading.Thread(target=callback, args=(profile,), daemon=True).start()
 
+                            if self.live:
+                                self.update_render()
+                    # Close message modal
+                    elif self.show_message_modal:
+                        if '\n' in data or '\r' in data:
+                            with self.lock:
+                                self.show_message_modal = False
                             if self.live:
                                 self.update_render()
                     # Enter key (manual refresh if not in manual mode)

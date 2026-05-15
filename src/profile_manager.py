@@ -626,16 +626,36 @@ class ProfileManager:
             )
             raw_profiles.extend(raw_urls)
 
-        # Parse profiles
+        return self.set_profiles_from_raw(raw_profiles)
+
+    def set_profiles_from_raw(self, raw_urls: List[str]) -> int:
+        """Parse and set profiles from raw URLs"""
         with self._lock:
             self.profiles.clear()
-            for raw_url in raw_profiles:
+            for raw_url in raw_urls:
                 profile = ProfileParser.parse_proxy_url(raw_url)
                 if profile:
                     self.profiles.append(profile)
 
         self.logger.info(f"Loaded {len(self.profiles)} profiles total")
         return len(self.profiles)
+
+    def load_profiles_from_file(self, file_path: str) -> int:
+        """Load profiles from a local JSON file"""
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+            raw_urls = []
+            if isinstance(data, list):
+                raw_urls = data
+            elif isinstance(data, dict) and "profiles" in data:
+                raw_urls = data["profiles"]
+
+            return self.set_profiles_from_raw(raw_urls)
+        except Exception as e:
+            self.logger.error(f"Error loading profiles from file {file_path}: {e}")
+            return 0
 
     def start_auto_refresh(
         self, sources: List, refresh_interval: int, on_refresh_callback: callable = None

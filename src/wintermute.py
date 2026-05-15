@@ -4,6 +4,7 @@ import datetime
 import json
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import List, Optional
@@ -20,7 +21,7 @@ from network_setup import (
 from profile_manager import Profile, ProfileManager
 from singbox_manager import SingboxManager
 from xray_manager import XrayManager
-from utils import find_singbox, find_xray
+from utils import find_singbox, find_xray, get_removable_drives, mount_drive, unmount_drive
 from ui import get_ui
 
 
@@ -837,6 +838,109 @@ class Wintermute:
             self.ui.set_profile("No working profiles")
             self.ui.add_app_log("[red]Retest failed: No working profiles found[/red]")
 
+    def load_from_usb(self):
+        """Find USB, mount and load profiles"""
+        try:
+            drives = get_removable_drives()
+            if not drives:
+                self.ui.show_message("USB", "No USB drive detected")
+                return
+
+            device = drives[0]
+            mount_path = "./usb"
+
+            self.ui.add_app_log(f"USB drive detected: {device}. Mounting...")
+
+            if not mount_drive(device, mount_path):
+                self.ui.show_message("Error", f"Failed to mount {device}")
+                return
+
+            try:
+                # Search for profile_*.json
+                usb_path = Path(mount_path)
+                if not usb_path.is_dir():
+                    self.ui.show_message("Error", "Mount point is not accessible")
+                    return
+
+                profile_files = list(usb_path.glob("profile_*.json"))
+
+                if not profile_files:
+                    self.ui.show_message("USB", "No profile_*.json files found")
+                    return
+
+                # Take the first one found
+                target_file = profile_files[0]
+                self.ui.add_app_log(f"Loading profiles from {target_file.name}...")
+
+                # 1) Stop auto refresh
+                self.profile_manager.stop_auto_refresh()
+
+                # 2) Load profiles
+                count = self.profile_manager.load_profiles_from_file(str(target_file))
+                if count == 0:
+                    self.ui.show_message("Error", "No profiles loaded from USB file")
+                    return
+
+                self.ui.add_app_log(f"Loaded {count} profiles from USB")
+
+                # 3) Update Sources in UI
+                self.ui.set_status_data(sources=["USB DRIVE"])
+
+                # 4) Start testing (similar to retest but without clearing profiles)
+                self.ui.add_app_log("Starting tests for USB profiles...")
+
+                # Stop current work
+                if self.healthchecker:
+                    self.healthchecker.stop()
+                if self.singbox_manager:
+                    self.singbox_manager.stop()
+                if self.xray_manager:
+                    self.xray_manager.stop()
+
+                # Clear broken and re-test
+                self.profile_manager.clear_broken_profiles()
+
+                # Run testing and selection logic
+                # We can't easily call self.load_and_select_profile() because it loads from config sources
+                # So we manually do what it does for the testing part
+                self.ui.set_mode("TESTING")
+
+                def run_retest():
+                    try:
+                        best = self.profile_manager.test_and_select_best(
+                            max_test=self.config.selection.max_test_profiles,
+                            timeout=self.config.selection.test_timeout,
+                            min_latency=self.config.selection.min_acceptable_latency,
+                            test_real=self.config.selection.test_real_connection,
+                            prefer_xray=self.config.selection.prefer_xray,
+                            on_progress=self.ui.set_progress,
+                        )
+
+                        if best:
+                            self.ui.set_profile(best.comment or best.host)
+                            if self.setup_singbox():
+                                self.ui.set_mode("WORKING")
+                                self.ui.add_app_log(f"[green]USB selection complete. Selected:[/green] {best.comment or best.host}")
+                                self.start_healthcheck()
+                        else:
+                            self.ui.set_mode("ERROR")
+                            self.ui.set_profile("No working profiles")
+                            self.ui.add_app_log("[red]USB tests failed: No working profiles found[/red]")
+                    except Exception as e:
+                        self.logger.error(f"Error in USB retest thread: {e}")
+                        self.ui.add_app_log(f"[red]USB retest error: {e}[/red]")
+
+                threading.Thread(target=run_retest, daemon=True).start()
+
+            finally:
+                # 5) Unmount
+                unmount_drive(mount_path)
+                self.ui.add_app_log("USB drive unmounted")
+
+        except Exception as e:
+            self.logger.error(f"Error in load_from_usb: {e}")
+            self.ui.show_message("Error", f"Critical error: {e}")
+
     def run(self):
         """Application entry point"""
 
@@ -848,6 +952,7 @@ class Wintermute:
         self.ui.register_hotkey("F5", self.force_reload_profiles)
         self.ui.register_hotkey("F6", self.switch_profile)
         self.ui.register_hotkey("F7", self.retest)
+        self.ui.register_hotkey("F8", self.load_from_usb)
 
         setup_logger(
             level=self.config.logging.level,
