@@ -384,6 +384,8 @@ class Wintermute:
         config = {
             "log": {
                 "access": "none",
+                "error": "" if not self.test_mode else "none",
+                "warning": "" if not self.test_mode else "none",
                 "loglevel": "warning"
             },
             "inbounds": inbounds,
@@ -543,6 +545,7 @@ class Wintermute:
                 config_path,
                 ui=self.ui if not self.test_mode else None,
                 log_file=xray_log,
+                quiet=self.test_mode,
             )
             if not self.xray_manager.start():
                 return False
@@ -581,6 +584,7 @@ class Wintermute:
                 config_path,
                 ui=self.ui if not self.test_mode else None,
                 log_file=singbox_log,
+                quiet=self.test_mode,
             )
             if not self.singbox_manager.start():
                 return False

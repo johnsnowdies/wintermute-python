@@ -12,12 +12,13 @@ from logger import get_logger
 class SingboxManager:
     """Sing-Box process manager class"""
 
-    def __init__(self, singbox_path: str, config_path: Path, ui: Optional[Any] = None, log_file: Optional[str] = None):
+    def __init__(self, singbox_path: str, config_path: Path, ui: Optional[Any] = None, log_file: Optional[str] = None, quiet: bool = False):
         self.logger = get_logger(__name__)
         self.singbox_path = singbox_path
         self.config_path = config_path
         self.ui = ui
         self.log_file = log_file
+        self.quiet = quiet
         self.process: Optional[subprocess.Popen] = None
         self._running = False
         self._log_thread: Optional[threading.Thread] = None
@@ -87,19 +88,23 @@ class SingboxManager:
             with self._error_lock:
                 self._error_timestamps.clear()
 
+            stdout_cfg = subprocess.DEVNULL if self.quiet else subprocess.PIPE
+            stderr_cfg = subprocess.STDOUT if not self.quiet else subprocess.DEVNULL
+
             self.process = subprocess.Popen(
                 [self.singbox_path, "run", "-c", str(self.config_path)],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
+                stdout=stdout_cfg,
+                stderr=stderr_cfg,
                 text=True,
                 bufsize=1,
                 universal_newlines=True,
             )
             self._running = True
 
-            # Launching log-reader thread
-            self._log_thread = threading.Thread(target=self._log_reader, daemon=True)
-            self._log_thread.start()
+            if not self.quiet:
+                # Launching log-reader thread
+                self._log_thread = threading.Thread(target=self._log_reader, daemon=True)
+                self._log_thread.start()
 
             # Check process is running
             if self.process.poll() is not None:
