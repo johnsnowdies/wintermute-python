@@ -46,7 +46,7 @@ class Wintermute:
         self.healthchecker: Optional[HealthChecker] = None
 
         # Flags
-        self._running = False
+        self._running = True
 
         # Sing-Box config path
         self.singbox_config_path = (
@@ -183,7 +183,6 @@ class Wintermute:
                 "fdfe:dcba:9876::1/126",
             ],
             "stack": "system",
-            "sniff": True,
             "route_exclude_address": ["127.0.0.0/8"]
             + network_config.exclude_subnets
             + ["224.0.0.0/4", "255.255.255.255/32"],
@@ -195,8 +194,6 @@ class Wintermute:
                 "tag": "mixed-in",
                 "listen": "0.0.0.0",
                 "listen_port": proxy_port,
-                "sniff": True,
-                "sniff_override_destination": True,
             }
 
         return {
@@ -209,6 +206,7 @@ class Wintermute:
             "route": {
                 "auto_detect_interface": True,
                 "rules": [
+                    {"action": "sniff"},
                     {"inbound": "tun-in", "outbound": "proxy"},
                     {
                         "ip_cidr": ["127.0.0.0/8"] + network_config.exclude_subnets,
@@ -331,7 +329,7 @@ class Wintermute:
         """Start tunnel watchdog"""
         self.healthchecker = HealthChecker(
             check_urls=self.config.testing.healthcheck_urls,
-            check_interval=10,  # self.config.testing.healthcheck_interval,
+            check_interval=self.config.testing.healthcheck_interval,
             timeout=self.config.testing.timeout,
             failure_threshold=self.config.testing.failure_threshold,
             on_failure_callback=self.on_tunnel_failure,
@@ -419,15 +417,16 @@ class Wintermute:
             return 1
 
         # Load and select profile
-        if not self.load_and_select_profile():
-            return 1
+        while self._running:
+            if self.load_and_select_profile():
+                # Setup and start Sing-Box
+                if self.setup_singbox():
+                    break
 
-        # Setup and start Sing-Box
-        if not self.setup_singbox():
-            return 1
+            self.logger.warning("No working profiles found. Retrying in 30 seconds...")
+            time.sleep(30)
 
         # Running watchdog
-        self._running = True
         self.start_healthcheck()
         self.start_profile_refresh()
 

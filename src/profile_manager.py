@@ -391,8 +391,8 @@ class ProfileTester:
                 timeout=timeout,
                 verify=True,
                 proxies=dict(
-                    http=f"socks5h://0.0.0.0:{proxy_port}",
-                    https=f"socks5h://0.0.0.0:{proxy_port}",
+                    http=f"socks5h://127.0.0.1:{proxy_port}",
+                    https=f"socks5h://127.0.0.1:{proxy_port}",
                 ),
             )
 
