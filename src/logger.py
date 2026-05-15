@@ -3,10 +3,32 @@ import sys
 from typing import Optional, Any
 
 
+class ColoredFormatter(logging.Formatter):
+    """Custom formatter to add colors to log levels using Rich markup"""
+
+    COLORS = {
+        "DEBUG": "dim cyan",
+        "INFO": "green",
+        "WARNING": "yellow",
+        "ERROR": "red",
+        "CRITICAL": "bold red",
+    }
+
+    def format(self, record):
+        # Create a copy of the record to avoid modifying the original one permanently
+        # as it might be used by multiple handlers
+        record_copy = logging.makeLogRecord(record.__dict__)
+
+        level_name = record_copy.levelname
+        color = self.COLORS.get(level_name, "white")
+        record_copy.levelname = f"[{color}]{level_name}[/]"
+        return super().format(record_copy)
+
+
 def setup_logger(
     name: Optional[str] = None,
     level: str = "info",
-    log_format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    log_format: str = "%(asctime)s %(levelname)s: %(message)s",
     log_file: Optional[str] = None,
     ui: Optional[Any] = None,
 ) -> logging.Logger:
@@ -40,27 +62,36 @@ def setup_logger(
     logger.handlers.clear()
 
     # Create formatter
-    formatter = logging.Formatter(log_format)
+    # Default date format to only time
+    date_fmt = "%H:%M:%S"
+
+    # Use ColoredFormatter for UI and Console if it's going to be rendered by Rich
+    # For file, we might want a plain formatter
+    plain_formatter = logging.Formatter(log_format, datefmt=date_fmt)
+    colored_formatter = ColoredFormatter(log_format, datefmt=date_fmt)
 
     # Setup handlers
     if ui:
         from ui import UILogHandler
         ui_handler = UILogHandler(ui)
         ui_handler.setLevel(log_level)
-        ui_handler.setFormatter(formatter)
+        ui_handler.setFormatter(colored_formatter)
         logger.addHandler(ui_handler)
 
     if log_file:
         file_handler = logging.FileHandler(log_file, encoding="utf-8")
         file_handler.setLevel(log_level)
-        file_handler.setFormatter(formatter)
+        file_handler.setFormatter(plain_formatter)
         logger.addHandler(file_handler)
 
     # Use stdout only if UI is not active to avoid conflicts with rich.live
     if not ui:
+        from rich.logging import RichHandler
+        # RichHandler handles its own levels and time by default,
+        # but we can customize it or use a simple StreamHandler with ColoredFormatter
         stream_handler = logging.StreamHandler(sys.stdout)
         stream_handler.setLevel(log_level)
-        stream_handler.setFormatter(formatter)
+        stream_handler.setFormatter(colored_formatter)
         logger.addHandler(stream_handler)
 
     return logger

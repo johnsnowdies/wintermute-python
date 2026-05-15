@@ -66,7 +66,7 @@ class UI:
     def _get_panel(self, logs, title):
         content = Text()
         for log in logs[-20:]: # Show last 20 lines
-            content.append(log + "\n")
+            content.append(Text.from_markup(log) + "\n")
         return Panel(content, title=title, border_style="blue")
 
     def _get_footer(self):
