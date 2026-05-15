@@ -74,6 +74,7 @@ class UI:
         self.progress_total = 0
         self.show_help = False
         self.hotkeys = {}
+        self.broken_profiles = set()
 
     def _clean_text(self, text: str) -> str:
         if not text:
@@ -218,6 +219,7 @@ class UI:
             for p in self.test_results[:display_count]:
                 raw_name = p.comment or p.host
                 is_current = self._clean_name(raw_name) == self.profile_name
+                is_broken = p.raw_url in self.broken_profiles
 
                 if p.comment:
                     name = self._clean_name(f"{p.comment} ({p.host})")
@@ -238,9 +240,18 @@ class UI:
                     ping_str = f"{ping}ms"
                     ping_style = "red"
 
+                if is_broken:
+                    ping_style = "dim gray"
+
                 prefix = "> " if is_current else "  "
                 protocol_char = "X" if p.extra.get("type") == "xhttp" else "S"
-                protocol_style = "bold green" if protocol_char == "X" else "bold orange1"
+
+                if is_broken:
+                    protocol_style = "dim gray"
+                    name_style = "dim gray"
+                else:
+                    protocol_style = "bold green" if protocol_char == "X" else "bold orange1"
+                    name_style = "bold white" if is_current else ""
 
                 # Calculate space for name
                 # available = status_width - cell_len(prefix) - 2 (prot + space) - cell_len(ping_str) - 1 (min space)
@@ -260,7 +271,7 @@ class UI:
                 line.append(prefix, style="bold blink" if is_current else "")
                 line.append(protocol_char, style=protocol_style)
                 line.append(" ")
-                line.append(name, style="bold white" if is_current else "")
+                line.append(name, style=name_style)
                 line.append(padding)
                 line.append(ping_str, style=ping_style)
                 content.append(line)
@@ -285,7 +296,7 @@ class UI:
                 self.main_layout["left"]["core"].update(self._get_panel(self.core_logs, "Core (Sing-box/Xray) Logs"))
                 self.main_layout["status"].update(self._get_status_panel())
 
-    def set_status_data(self, sources=None, last_update=None, test_results=None):
+    def set_status_data(self, sources=None, last_update=None, test_results=None, broken_profiles=None):
         with self.lock:
             if sources is not None:
                 self.sources = [self._clean_name(s) for s in sources]
@@ -293,6 +304,8 @@ class UI:
                 self.last_update = last_update
             if test_results is not None:
                 self.test_results = test_results
+            if broken_profiles is not None:
+                self.broken_profiles = broken_profiles
         if self.live:
             self.update_render()
 
@@ -409,7 +422,9 @@ class UI:
         header.append(" [F1]", style="bold cyan")
         header.append(" Help  ", style="white")
         header.append("[F5]", style="bold cyan")
-        header.append(" Reload", style="white")
+        header.append(" Reload  ", style="white")
+        header.append("[F6]", style="bold cyan")
+        header.append(" Switch", style="white")
         return header
 
     def _get_help_panel(self):
@@ -418,7 +433,9 @@ class UI:
         help_text.append(" [F1] ", style="bold cyan")
         help_text.append("- Toggle this help screen\n")
         help_text.append(" [F5] ", style="bold cyan")
-        help_text.append("- Reload profiles from sources (URLs)\n\n")
+        help_text.append("- Reload profiles from sources (URLs)\n")
+        help_text.append(" [F6] ", style="bold cyan")
+        help_text.append("- Switch to the next best profile (current marked as broken)\n\n")
         help_text.append(" [Ctrl+C] ", style="bold red")
         help_text.append("- Terminate application\n\n")
         help_text.append(" More features coming soon...", style="italic dim")
@@ -472,6 +489,9 @@ class UI:
                     # F5 sequences
                     elif any(f5 in data for f5 in ['\x1b[15~', '\x1bOT', '\x1b[15;2~', '\x1b[15;5~']):
                         self._handle_hotkey("F5")
+                    # F6 sequences
+                    elif any(f6 in data for f6 in ['\x1b[17~', '\x1bOU', '\x1b[17;2~', '\x1b[17;5~']):
+                        self._handle_hotkey("F6")
                     # Enter key (manual refresh)
                     elif '\n' in data or '\r' in data:
                         if self.live:

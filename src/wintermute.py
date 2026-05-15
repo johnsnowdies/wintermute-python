@@ -464,7 +464,8 @@ class Wintermute:
 
         self.ui.set_status_data(
             sources=sources_urls,
-            last_update=last_update if last_update > 0 else None
+            last_update=last_update if last_update > 0 else None,
+            broken_profiles=self.profile_manager.broken_profiles.copy()
         )
 
         if count == 0:
@@ -696,7 +697,8 @@ class Wintermute:
 
         self.ui.set_status_data(
             sources=sources_urls,
-            last_update=last_update if last_update > 0 else None
+            last_update=last_update if last_update > 0 else None,
+            broken_profiles=self.profile_manager.broken_profiles.copy()
         )
 
     def force_reload_profiles(self):
@@ -711,6 +713,55 @@ class Wintermute:
         except Exception as e:
             self.logger.error(f"Failed to reload profiles: {e}")
 
+    def switch_profile(self):
+        """Force switch to the next best profile and mark current as broken"""
+        self.logger.info("Manual profile switch requested (F6)")
+
+        current_profile = self.profile_manager.get_selected_profile()
+        if current_profile:
+            self.profile_manager.mark_profile_as_broken(current_profile)
+            self.ui.add_app_log(f"[yellow]Marked as broken:[/yellow] {current_profile.comment or current_profile.host}")
+            # Update UI state with new broken profiles
+            self.ui.set_status_data(broken_profiles=self.profile_manager.broken_profiles.copy())
+
+        # Stop engines
+        if self.singbox_manager:
+            self.singbox_manager.stop()
+            self.singbox_manager = None
+        if self.xray_manager:
+            self.xray_manager.stop()
+            self.xray_manager = None
+
+        # Try to find next best from working_profiles
+        with self.profile_manager._lock:
+            available = [p for p in self.profile_manager.working_profiles
+                         if p.raw_url not in self.profile_manager.broken_profiles]
+
+        if not available:
+            self.logger.warning("No more working profiles. Starting full re-test.")
+            self.ui.add_app_log("[yellow]No more working profiles. Re-testing all...[/yellow]")
+            if self.load_and_select_profile():
+                if self.setup_singbox():
+                    self.ui.set_mode("WORKING")
+            return
+
+        # Pick best according to prefer_xray
+        best = available[0]
+        if self.config.selection.prefer_xray:
+            for p in available:
+                if p.extra.get("type") == "xhttp":
+                    best = p
+                    break
+
+        with self.profile_manager._lock:
+            self.profile_manager.selected_profile = best
+
+        self.ui.set_profile(best.comment or best.host)
+
+        if self.setup_singbox():
+             self.ui.set_mode("WORKING")
+             self.ui.add_app_log(f"[green]Switched to[/green] {best.comment or best.host}")
+
     def run(self):
         """Application entry point"""
 
@@ -719,6 +770,7 @@ class Wintermute:
 
         # Register hotkeys
         self.ui.register_hotkey("F5", self.force_reload_profiles)
+        self.ui.register_hotkey("F6", self.switch_profile)
 
         setup_logger(
             level=self.config.logging.level,

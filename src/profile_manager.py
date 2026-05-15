@@ -595,6 +595,7 @@ class ProfileManager:
         self.profiles: List[Profile] = []
         self.working_profiles: List[Profile] = []
         self.selected_profile: Optional[Profile] = None
+        self.broken_profiles: Set[str] = set() # Store raw_url of broken profiles
         self._lock = threading.Lock()
         self._loader = ProfileLoader(cache_dir, use_cache)
         self._refresh_thread: Optional[threading.Thread] = None
@@ -702,6 +703,17 @@ class ProfileManager:
             return self._loader.cache.get_timestamp(url)
         return None
 
+    def mark_profile_as_broken(self, profile: Profile):
+        """Marks a profile as broken in memory"""
+        with self._lock:
+            self.broken_profiles.add(profile.raw_url)
+            self.logger.info(f"Profile marked as broken: {profile.comment or profile.host}")
+
+    def is_profile_broken(self, profile: Profile) -> bool:
+        """Checks if a profile is marked as broken"""
+        with self._lock:
+            return profile.raw_url in self.broken_profiles
+
     def test_and_select_best(
         self,
         max_test: int = 100,
@@ -726,12 +738,20 @@ class ProfileManager:
             return None
 
         # Pick the best one
+        # Filter out broken profiles from selection
+        with self._lock:
+            available_profiles = [p for p in self.working_profiles if p.raw_url not in self.broken_profiles]
+
+        if not available_profiles:
+            self.logger.error("NO WORKING NON-BROKEN PROFILES FOUND")
+            return None
+
         # self.working_profiles is already sorted by latency from ProfileTester.test_profiles
-        best = self.working_profiles[0]
+        best = available_profiles[0]
 
         if prefer_xray:
             # Look for first xray-compatible profile (type=xhttp)
-            for p in self.working_profiles:
+            for p in available_profiles:
                 if p.extra.get("type") == "xhttp":
                     best = p
                     break
@@ -761,8 +781,9 @@ class ProfileManager:
             return self.selected_profile
 
     def get_backup_profiles(self, count: int = 3) -> List[Profile]:
-        """Returns backup profiles"""
+        """Returns backup profiles (excluding broken ones)"""
         with self._lock:
-            # Exclude the currently selected profile
-            backups = [p for p in self.working_profiles if p != self.selected_profile]
+            # Exclude the currently selected profile and broken ones
+            backups = [p for p in self.working_profiles
+                       if p != self.selected_profile and p.raw_url not in self.broken_profiles]
             return backups[:count]
