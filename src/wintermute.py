@@ -875,16 +875,16 @@ class Wintermute:
                 return
 
             try:
-                # Search for profile_*.json
+                # Search for profiles_*.json
                 usb_path = Path(mount_path)
                 if not usb_path.is_dir():
                     self.ui.show_message("Error", "Mount point is not accessible")
                     return
 
-                profile_files = list(usb_path.glob("profile_*.json"))
+                profile_files = list(usb_path.glob("profiles_*.json"))
 
                 if not profile_files:
-                    self.ui.show_message("USB", "No profile_*.json files found")
+                    self.ui.show_message("USB", "No profiles_*.json files found")
                     return
 
                 # Take the first one found

@@ -512,18 +512,18 @@ class UI:
         help_text = Text()
 
         art = """
-░██       ░██ ░██              ░██                                                      ░██
-░██       ░██                  ░██                                                      ░██
-░██  ░██  ░██ ░██░████████  ░████████  ░███████  ░██░████ ░█████████████  ░██    ░██ ░████████  ░███████
-░██ ░████ ░██ ░██░██    ░██    ░██    ░██    ░██ ░███     ░██   ░██   ░██ ░██    ░██    ░██    ░██    ░██
-░██░██ ░██░██ ░██░██    ░██    ░██    ░█████████ ░██      ░██   ░██   ░██ ░██    ░██    ░██    ░█████████
-░████   ░████ ░██░██    ░██    ░██    ░██        ░██      ░██   ░██   ░██ ░██   ░███    ░██    ░██
-░███     ░███ ░██░██    ░██     ░████  ░███████  ░██      ░██   ░██   ░██  ░█████░██     ░████  ░███████
-
-
+ █     █░ ██▓ ███▄    █ ▄▄▄█████▓▓█████  ██▀███   ███▄ ▄███▓ █    ██ ▄▄▄█████▓▓█████
+▓█░ █ ░█░▓██▒ ██ ▀█   █ ▓  ██▒ ▓▒▓█   ▀ ▓██ ▒ ██▒▓██▒▀█▀ ██▒ ██  ▓██▒▓  ██▒ ▓▒▓█   ▀
+▒█░ █ ░█ ▒██▒▓██  ▀█ ██▒▒ ▓██░ ▒░▒███   ▓██ ░▄█ ▒▓██    ▓██░▓██  ▒██░▒ ▓██░ ▒░▒███
+░█░ █ ░█ ░██░▓██▒  ▐▌██▒░ ▓██▓ ░ ▒▓█  ▄ ▒██▀▀█▄  ▒██    ▒██ ▓▓█  ░██░░ ▓██▓ ░ ▒▓█  ▄
+░░██▒██▓ ░██░▒██░   ▓██░  ▒██▒ ░ ░▒████▒░██▓ ▒██▒▒██▒   ░██▒▒▒█████▓   ▒██▒ ░ ░▒████▒
+░ ▓░▒ ▒  ░▓  ░ ▒░   ▒ ▒   ▒ ░░   ░░ ▒░ ░░ ▒▓ ░▒▓░░ ▒░   ░  ░░▒▓▒ ▒ ▒   ▒ ░░   ░░ ▒░ ░
+  ▒ ░ ░   ▒ ░░ ░░   ░ ▒░    ░     ░ ░  ░  ░▒ ░ ▒░░  ░      ░░░▒░ ░ ░     ░     ░ ░  ░
+  ░   ░   ▒ ░   ░   ░ ░   ░         ░     ░░   ░ ░      ░    ░░░ ░ ░   ░         ░
+    ░     ░           ░             ░  ░   ░            ░      ░                 ░  ░
 
 """
-        help_text.append(art, style="bold yellow")
+        help_text.append(art, style="bold blue")
         help_text.append("\n Wintermute Hotkeys\n\n", style="bold yellow")
         help_text.append(" [F1] ", style="bold cyan")
         help_text.append("- Toggle this help screen\n")
@@ -540,7 +540,7 @@ class UI:
         help_text.append(" [F7] ", style="bold cyan")
         help_text.append("- Clear broken profiles and start full re-test\n")
         help_text.append(" [F8] ", style="bold cyan")
-        help_text.append("- Load profiles from USB drive (profile_*.json)\n")
+        help_text.append("- Load profiles from USB drive (profiles_*.json)\n")
         help_text.append(" [F9] ", style="bold cyan")
         help_text.append("- Toggle Healthcheck (enable/disable auto-switching)\n\n")
         help_text.append(" [Arrows] ", style="bold cyan")
