@@ -42,3 +42,26 @@ def decode_b64_if_valid(s: str) -> Optional[str]:
         logger = get_logger(__name__)
         logger.debug(f"_decode_b64_if_valid general error: {e}")
         return None
+
+def find_xray() -> Optional[str]:
+    """Find Xray executable"""
+    possible_paths = [
+        "/usr/local/bin/xray",
+        "/usr/bin/xray",
+        Path.home() / "xray" / "xray",
+        "./xray",
+        "xray",
+    ]
+
+    for path in possible_paths:
+        path_str = str(path) if isinstance(path, Path) else path
+        try:
+            result = subprocess.run(
+                [path_str, "version"], capture_output=True, text=True, timeout=2
+            )
+            if result.returncode == 0:
+                return path_str
+        except (FileNotFoundError, PermissionError, subprocess.TimeoutExpired):
+            continue
+
+    return None

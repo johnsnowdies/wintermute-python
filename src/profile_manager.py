@@ -258,6 +258,11 @@ class ProfileParser:
             elif extra["type"] == "http":
                 extra["path"] = params.get("path", ["/"])[0]
                 extra["http_host"] = params.get("host", [""])[0]
+            elif extra["type"] == "xhttp":
+                extra["path"] = params.get("path", ["/"])[0]
+                extra["host"] = params.get("host", [""])[0]
+                extra["mode"] = params.get("mode", ["auto"])[0]
+                extra["extra"] = params.get("extra", [""])[0]
 
             # TLS/Reality
             if extra["security"] in ["tls", "reality"]:
@@ -676,6 +681,7 @@ class ProfileManager:
         timeout: int = 1,
         min_latency: int = 500,
         test_real: bool = False,
+        prefer_xray: bool = False,
     ) -> Optional[Profile]:
         """
         Tests profiles and selects the best one
@@ -692,7 +698,15 @@ class ProfileManager:
             return None
 
         # Pick the best one
+        # self.working_profiles is already sorted by latency from ProfileTester.test_profiles
         best = self.working_profiles[0]
+
+        if prefer_xray:
+            # Look for first xray-compatible profile (type=xhttp)
+            for p in self.working_profiles:
+                if p.extra.get("type") == "xhttp":
+                    best = p
+                    break
 
         self.logger.info("=" * 80)
 

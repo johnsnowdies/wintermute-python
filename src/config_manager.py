@@ -84,6 +84,7 @@ class SelectionConfig:
     auto_switch: bool = True
     switch_delay: int = 10  # sec
     backup_profiles_count: int = 3
+    prefer_xray: bool = False
 
 
 @dataclass
@@ -173,6 +174,7 @@ class ConfigManager:
             auto_switch=sel.get("auto_switch", True),
             switch_delay=parse_time_interval(sel.get("switch_delay", "10s")),
             backup_profiles_count=sel.get("backup_profiles_count", 3),
+            prefer_xray=sel.get("prefer_xray", False),
         )
 
         # Cache config

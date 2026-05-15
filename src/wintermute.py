@@ -18,7 +18,8 @@ from network_setup import (
 )
 from profile_manager import Profile, ProfileManager
 from singbox_manager import SingboxManager
-from utils import find_singbox
+from xray_manager import XrayManager
+from utils import find_singbox, find_xray
 
 
 class Wintermute:
@@ -43,6 +44,7 @@ class Wintermute:
             cache_dir=cache_dir, use_cache=self.config.cache.enabled, config=config_path
         )
         self.singbox_manager: Optional[SingboxManager] = None
+        self.xray_manager: Optional[XrayManager] = None
         self.healthchecker: Optional[HealthChecker] = None
 
         # Flags
@@ -91,39 +93,50 @@ class Wintermute:
                 outbound["flow"] = flow
 
         # Transport
-        if extra["type"] != "tcp" and extra["type"] != "xhttp":
-            transport = {"type": extra["type"]}
+        if extra["type"] != "tcp":
+            if extra["type"] == "xhttp":
+                # xhttp is for Xray
+                transport = {
+                    "type": "xhttp",
+                    "path": extra.get("path", "/"),
+                    "host": extra.get("host", ""),
+                    "mode": extra.get("mode", "auto"),
+                    "extra": extra.get("extra", ""),
+                }
+                outbound["transport"] = transport
+            else:
+                transport = {"type": extra["type"]}
 
-            if extra["type"] == "ws":
-                if extra.get("path"):
-                    path = extra["path"]
-                    if "?ed=" in path:
-                        path_without_ed = path.split("?ed=")[0]
-                        transport["path"] = path_without_ed
-                        ed_value = path.split("?ed=")[1]
-                        if ed_value.isdigit() and int(ed_value) > 0:
-                            transport["max_early_data"] = int(ed_value)
-                            transport[
-                                "early_data_header_name"
-                            ] = "Sec-WebSocket-Protocol"
-                    else:
-                        transport["path"] = path
+                if extra["type"] == "ws":
+                    if extra.get("path"):
+                        path = extra["path"]
+                        if "?ed=" in path:
+                            path_without_ed = path.split("?ed=")[0]
+                            transport["path"] = path_without_ed
+                            ed_value = path.split("?ed=")[1]
+                            if ed_value.isdigit() and int(ed_value) > 0:
+                                transport["max_early_data"] = int(ed_value)
+                                transport[
+                                    "early_data_header_name"
+                                ] = "Sec-WebSocket-Protocol"
+                        else:
+                            transport["path"] = path
 
-                if extra.get("ws_host"):
-                    transport["headers"] = {"Host": extra["ws_host"]}
+                    if extra.get("ws_host"):
+                        transport["headers"] = {"Host": extra["ws_host"]}
 
-            elif extra["type"] == "grpc":
-                if extra.get("service_name"):
-                    transport["service_name"] = extra["service_name"]
+                elif extra["type"] == "grpc":
+                    if extra.get("service_name"):
+                        transport["service_name"] = extra["service_name"]
 
-            elif extra["type"] == "http":
-                if extra.get("path"):
-                    transport["path"] = extra["path"]
-                if extra.get("http_host"):
-                    transport["host"] = [extra["http_host"]]
-                transport["method"] = "GET"
+                elif extra["type"] == "http":
+                    if extra.get("path"):
+                        transport["path"] = extra["path"]
+                    if extra.get("http_host"):
+                        transport["host"] = [extra["http_host"]]
+                    transport["method"] = "GET"
 
-            outbound["transport"] = transport
+                outbound["transport"] = transport
 
         # TLS/Reality
 
@@ -219,21 +232,147 @@ class Wintermute:
             },
         }
 
-    def _save_singbox_config(
+    def _create_xray_config(
+        self,
+        outbound: dict,
+        network_config,
+        proxy_mode: bool = False,
+        proxy_port: int = 3128,
+    ) -> dict:
+        """Create Xray config file"""
+
+        # Xray config is a bit different from Sing-box
+        # We need to translate Sing-box style outbound/inbound to Xray style
+
+        # Inbounds
+        inbounds = []
+        if proxy_mode:
+            inbounds.append({
+                "port": proxy_port,
+                "protocol": "socks",
+                "settings": {"auth": "noauth", "udp": True},
+                "sniffing": {"enabled": True, "destOverride": ["http", "tls"]}
+            })
+        else:
+            # TUN for Xray (requires fakedns often, but let's keep it simple)
+            inbounds.append({
+                "protocol": "dokodemo-door",
+                "port": 0,
+                "tag": "tun-in",
+                "settings": {"network": "tcp,udp", "followRedirect": True},
+                "sniffing": {"enabled": True, "destOverride": ["http", "tls"]}
+            })
+
+        # Outbound translation
+        xray_outbound = {
+            "protocol": outbound["type"],
+            "tag": outbound["tag"],
+            "settings": {
+                "vnext": [{
+                    "address": outbound["server"],
+                    "port": outbound["server_port"],
+                    "users": [{
+                        "id": outbound["uuid"],
+                        "encryption": "none",
+                        "flow": outbound.get("flow", "")
+                    }]
+                }]
+            },
+            "streamSettings": {
+                "network": outbound.get("transport", {}).get("type", "tcp"),
+                "security": "none"
+            }
+        }
+
+        # Transport
+        if "transport" in outbound:
+            t = outbound["transport"]
+            if t["type"] == "ws":
+                xray_outbound["streamSettings"]["wsSettings"] = {
+                    "path": t.get("path", "/"),
+                    "headers": t.get("headers", {})
+                }
+            elif t["type"] == "grpc":
+                xray_outbound["streamSettings"]["grpcSettings"] = {
+                    "serviceName": t.get("service_name", "grpc")
+                }
+            elif t["type"] == "xhttp":
+                # Parse extra if it's a string (it usually comes from URL)
+                xhttp_extra = {}
+                if t.get("extra"):
+                    try:
+                        if isinstance(t["extra"], str):
+                            xhttp_extra = json.loads(t["extra"])
+                        else:
+                            xhttp_extra = t["extra"]
+                    except json.JSONDecodeError:
+                        self.logger.warning(f"Failed to parse xhttp extra: {t['extra']}")
+                        xhttp_extra = {}
+
+                xray_outbound["streamSettings"]["xhttpSettings"] = {
+                    "path": t.get("path", "/"),
+                    "host": t.get("host", ""),
+                    "mode": t.get("mode", "auto"),
+                    "extra": xhttp_extra
+                }
+
+        # TLS/Reality
+        if "tls" in outbound:
+            tls = outbound["tls"]
+            if tls.get("enabled"):
+                if tls.get("reality", {}).get("enabled"):
+                    xray_outbound["streamSettings"]["security"] = "reality"
+                    xray_outbound["streamSettings"]["realitySettings"] = {
+                        "show": False,
+                        "fingerprint": tls.get("utls", {}).get("fingerprint", "chrome"),
+                        "serverName": tls.get("server_name", ""),
+                        "publicKey": tls["reality"]["public_key"],
+                        "shortId": tls["reality"]["short_id"],
+                        "spiderX": "/"
+                    }
+                else:
+                    xray_outbound["streamSettings"]["security"] = "tls"
+                    xray_outbound["streamSettings"]["tlsSettings"] = {
+                        "serverName": tls.get("server_name", ""),
+                        "fingerprint": tls.get("utls", {}).get("fingerprint", "chrome")
+                    }
+
+        return {
+            "log": {"loglevel": "error"},
+            "inbounds": inbounds,
+            "outbounds": [
+                xray_outbound,
+                {"protocol": "freedom", "tag": "direct"},
+                {"protocol": "blackhole", "tag": "block"}
+            ],
+            "routing": {
+                "domainStrategy": "AsIs",
+                "rules": [
+                    {"type": "field", "outboundTag": "direct", "ip": ["127.0.0.0/8"] + network_config.exclude_subnets},
+                    {"type": "field", "outboundTag": "proxy", "network": "tcp,udp"}
+                ]
+            }
+        }
+
+    def _save_config(
         self,
         config: dict,
-        config_path: Path,
+        filename: str,
         proxy_mode: bool = False,
         proxy_port: int = 3128,
     ) -> Path:
-        """Save Sing-Box Config"""
+        """Save Config (Generic)"""
 
         if proxy_mode:
             config_path = (
                 Path.home()
                 / ".config"
-                / "sing-box"
-                / f"proxy_{proxy_port}_{datetime.datetime.now()}.json"
+                / "wintermute"
+                / f"{filename}_proxy_{proxy_port}_{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}.json"
+            )
+        else:
+            config_path = (
+                Path.home() / ".config" / "wintermute" / f"{filename}_config.json"
             )
 
         config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -265,6 +404,7 @@ class Wintermute:
             if self.config.testing.healthcheck_content_url
             and self.config.testing.healthcheck_content_md5
             else False,
+            prefer_xray=self.config.selection.prefer_xray,
         )
 
         if not best_profile:
@@ -279,37 +419,54 @@ class Wintermute:
         proxy_mode: bool = False,
         proxy_port: int = 3128,
     ) -> bool:
-        """Setup Sing-Box as child process for selected profile"""
+        """Setup Proxy Engine (Sing-Box or Xray) as child process for selected profile"""
         profile = profile or self.profile_manager.get_selected_profile()
         if not profile:
-            self.logger.error("setup_singbox called without profile value")
+            self.logger.error("setup_engine called without profile value")
             return False
 
-        # Creating Sing-Box configuration
+        # Decide which engine to use
+        use_xray = profile.extra.get("type") == "xhttp"
+
+        # Creating configuration
         outbound = self._create_singbox_outbound(profile)
-        config = self._create_singbox_config(
-            outbound,
-            self.config.network,
-            proxy_mode,
-            proxy_port,
-        )
 
-        self.singbox_config_path = self._save_singbox_config(
-            config, self.singbox_config_path, proxy_mode, proxy_port
-        )
-
-        # Lookup for Sing-Box executable
-        singbox_path = find_singbox()
-        if not singbox_path:
-            self.logger.error(
-                "No sing-box found at your system. https://getsingbox.com"
+        if use_xray:
+            config = self._create_xray_config(
+                outbound,
+                self.config.network,
+                proxy_mode,
+                proxy_port,
             )
-            return False
+            config_path = self._save_config(config, "xray", proxy_mode, proxy_port)
 
-        # Start Sing-Box Manager
-        self.singbox_manager = SingboxManager(singbox_path, self.singbox_config_path)
-        if not self.singbox_manager.start():
-            return False
+            xray_path = find_xray()
+            if not xray_path:
+                self.logger.error("No xray found at your system.")
+                return False
+
+            self.xray_manager = XrayManager(xray_path, config_path)
+            if not self.xray_manager.start():
+                return False
+        else:
+            config = self._create_singbox_config(
+                outbound,
+                self.config.network,
+                proxy_mode,
+                proxy_port,
+            )
+            config_path = self._save_config(config, "singbox", proxy_mode, proxy_port)
+
+            singbox_path = find_singbox()
+            if not singbox_path:
+                self.logger.error(
+                    "No sing-box found at your system. https://getsingbox.com"
+                )
+                return False
+
+            self.singbox_manager = SingboxManager(singbox_path, config_path)
+            if not self.singbox_manager.start():
+                return False
 
         # TODO: check if necessary
         time.sleep(2)
@@ -333,24 +490,30 @@ class Wintermute:
             timeout=self.config.testing.timeout,
             failure_threshold=self.config.testing.failure_threshold,
             on_failure_callback=self.on_tunnel_failure,
-            external_fault_callback=self._has_singbox_error_burst,
+            external_fault_callback=self._has_error_burst,
             initial_delay=self.config.testing.initial_delay,
         )
         self.healthchecker.start()
 
-    def _has_singbox_error_burst(self) -> bool:
-        """Returns True when sing-box reports too many ERROR logs in short period."""
-        if not self.singbox_manager:
-            return False
-        return self.singbox_manager.has_error_burst(threshold=3, window_sec=60)
+    def _has_error_burst(self) -> bool:
+        """Returns True when proxy engine reports too many ERROR logs in short period."""
+        if self.singbox_manager and self.singbox_manager.has_error_burst(threshold=3, window_sec=60):
+            return True
+        if self.xray_manager and self.xray_manager.has_error_burst(threshold=3, window_sec=60):
+            return True
+        return False
 
     def on_tunnel_failure(self):
         """Called on tunnel failure detected, autorecovery"""
         self.logger.warning("TUNNEL FAILURE DETECTED, RECOVERING...")
 
-        # Stoping Sing-Box process
+        # Stoping engines
         if self.singbox_manager:
             self.singbox_manager.stop()
+            self.singbox_manager = None
+        if self.xray_manager:
+            self.xray_manager.stop()
+            self.xray_manager = None
 
         # Using backup profiles
         backup_profiles = self.profile_manager.get_backup_profiles(
@@ -459,6 +622,9 @@ class Wintermute:
 
         if self.singbox_manager:
             self.singbox_manager.stop()
+
+        if self.xray_manager:
+            self.xray_manager.stop()
 
         self.logger.info("Cleanup complete")
 
