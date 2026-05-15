@@ -29,7 +29,11 @@ class UI:
             Layout(name="main", ratio=1),
             Layout(name="footer", size=1),
         )
-        self.layout["main"].split(
+        self.layout["main"].split_row(
+            Layout(name="left", ratio=7),
+            Layout(name="status", ratio=3),
+        )
+        self.layout["left"].split(
             Layout(name="app", ratio=1),
             Layout(name="core", ratio=1),
         )
@@ -85,6 +89,7 @@ class UI:
         with self.lock:
             self.layout["app"].update(self._get_panel(self.app_logs, "Application Logs"))
             self.layout["core"].update(self._get_panel(self.core_logs, "Core (Sing-box/Xray) Logs"))
+            self.layout["status"].update(Panel("", title="Status", border_style="green"))
             self.layout["footer"].update(self._get_footer())
 
     def set_mode(self, mode: str):
