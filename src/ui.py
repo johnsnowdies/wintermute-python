@@ -26,7 +26,7 @@ except ImportError:
     HAS_TERMIOS = False
 
 class UI:
-    def __init__(self, config_path: str = "config.yaml",):
+    def __init__(self, config_path: str = "config.yaml", config_manager=None):
         self.console = Console()
         self.layout = Layout()
 
@@ -37,8 +37,12 @@ class UI:
         self.lock = threading.Lock()
         self.live: Optional[Live] = None
 
-        self.config_manager = ConfigManager(config_path)
-        self.config = self.config_manager.load()
+        if config_manager:
+            self.config_manager = config_manager
+            self.config = config_manager.config
+        else:
+            self.config_manager = ConfigManager(config_path)
+            self.config = self.config_manager.load()
 
         self._setup_layout()
 
@@ -82,6 +86,15 @@ class UI:
         self.show_message_modal = False
         self.modal_title = ""
         self.modal_message = ""
+
+        # Sources Management
+        self.show_sources_list = False
+        self.selected_source_index = 0
+        self.show_source_edit = False
+        self.editing_source_index = -1
+        self.edit_source_field_index = 0
+        self.edit_source_obj = None # Temporary SourceConfig-like dict
+        self.source_callback = None # callback(action, index, data)
 
     def _clean_text(self, text: str) -> str:
         if not text:
@@ -301,6 +314,10 @@ class UI:
                 self.layout["body"].update(self._get_manual_panel())
             elif self.show_message_modal:
                 self.layout["body"].update(self._get_message_panel())
+            elif self.show_sources_list:
+                self.layout["body"].update(self._get_sources_list_panel())
+            elif self.show_source_edit:
+                self.layout["body"].update(self._get_source_edit_panel())
             else:
                 self.layout["body"].update(self.main_layout)
                 self.main_layout["left"]["app"].update(self._get_panel(self.app_logs, "Application Logs"))
@@ -311,6 +328,10 @@ class UI:
         with self.lock:
             if sources is not None:
                 self.sources = [self._clean_name(s) for s in sources]
+                # Ensure selected source index is within bounds
+                total_sources = len(self.config.sources)
+                if self.selected_source_index >= total_sources:
+                    self.selected_source_index = max(0, total_sources - 1)
             if last_update is not None:
                 self.last_update = last_update
             if test_results is not None:
@@ -434,6 +455,8 @@ class UI:
         header.append(" Help  ", style="white")
         header.append("[F2]", style="bold cyan")
         header.append(" Manual  ", style="white")
+        header.append("[F3]", style="bold cyan")
+        header.append(" Sources  ", style="white")
         header.append("[F5]", style="bold cyan")
         header.append(" Reload  ", style="white")
         header.append("[F6]", style="bold cyan")
@@ -451,6 +474,8 @@ class UI:
         help_text.append("- Toggle this help screen\n")
         help_text.append(" [F2] ", style="bold cyan")
         help_text.append("- Manual profile selection\n")
+        help_text.append(" [F3] ", style="bold cyan")
+        help_text.append("- Manage profile sources\n")
         help_text.append(" [F5] ", style="bold cyan")
         help_text.append("- Reload profiles from sources (URLs)\n")
         help_text.append(" [F6] ", style="bold cyan")
@@ -497,6 +522,159 @@ class UI:
             title=self.modal_title,
             border_style="bold yellow"
         )
+
+    def _get_sources_list_panel(self):
+        content = Text()
+        sources = self.config.sources
+        total = len(sources)
+
+        if not sources:
+            content.append("\n  No sources found.\n\n", style="bold red")
+        else:
+            # Scroll logic
+            panel_height = self.console.height - 10
+            if panel_height < 5: panel_height = 5
+
+            start_idx = max(0, self.selected_source_index - panel_height // 2)
+            end_idx = min(total, start_idx + panel_height)
+            if end_idx - start_idx < panel_height:
+                start_idx = max(0, end_idx - panel_height)
+
+            if start_idx > 0:
+                content.append("  ↑ ... more sources above\n", style="dim")
+
+            for i in range(start_idx, end_idx):
+                src = sources[i]
+                is_selected = (i == self.selected_source_index)
+                style = "bold white on blue" if is_selected else ("white" if src.enabled else "dim gray")
+
+                status_char = "[+]" if src.enabled else "[ ]"
+                line = Text()
+                line.append(f" {status_char} ", style=style)
+                line.append(f"{src.url} ", style=style)
+
+                # Metadata
+                meta = f"({src.type}, {src.refresh}s)"
+                padding = self.console.width - cell_len(line.plain) - cell_len(meta) - 6
+                if padding > 0:
+                    line.append(" " * padding, style=style)
+                line.append(meta, style=style)
+
+                content.append(line)
+                content.append("\n")
+
+            if end_idx < total:
+                content.append("  ↓ ... more sources below\n", style="dim")
+
+        footer = Text("\n [a] Add  [d] Delete  [Enter] Edit  [F3/Esc] Close", justify="center", style="bold cyan")
+
+        return Panel(
+            Group(content, footer),
+            title="Profile Sources",
+            border_style="cyan",
+            padding=(1, 1)
+        )
+
+    def _get_source_edit_panel(self):
+        if not self.edit_source_obj:
+            return Panel(Text("Error: No source to edit"), title="Error")
+
+        content = Text()
+        fields = [
+            ("URL", self.edit_source_obj["url"]),
+            ("Refresh", str(self.edit_source_obj["refresh"])),
+            ("Filter", self.edit_source_obj["filter"]),
+            ("Enabled", "Yes" if self.edit_source_obj["enabled"] else "No"),
+        ]
+
+        content.append("\n Editing Source\n\n", style="bold yellow")
+
+        for i, (label, value) in enumerate(fields):
+            is_selected = (i == self.edit_source_field_index)
+            style = "bold white on blue" if is_selected else "white"
+
+            line = Text()
+            line.append(f" {label:10}: ", style="bold cyan")
+            line.append(f" {value} ", style=style)
+            content.append(line)
+            content.append("\n")
+
+        content.append("\n [Enter] Change Value  [s] Save  [Esc] Cancel", style="bold cyan")
+
+        return Panel(
+            Align.center(content, vertical="middle"),
+            title="Source Editor",
+            border_style="bold green",
+            padding=(1, 2)
+        )
+
+    def toggle_sources(self, callback=None):
+        with self.lock:
+            self.show_sources_list = not self.show_sources_list
+            if self.show_sources_list:
+                self.show_help = False
+                self.show_manual = False
+                self.show_message_modal = False
+                self.source_callback = callback
+                self.selected_source_index = 0
+        if self.live:
+            self.update_render()
+
+    def toggle_source_edit(self, source_index=None):
+        with self.lock:
+            if source_index is not None and 0 <= source_index < len(self.config.sources):
+                src = self.config.sources[source_index]
+                self.editing_source_index = source_index
+                self.edit_source_obj = {
+                    "url": src.url,
+                    "type": src.type,
+                    "refresh": src.refresh,
+                    "filter": src.filter,
+                    "enabled": src.enabled,
+                    "priority": src.priority
+                }
+                self.show_source_edit = True
+                self.show_sources_list = False
+                self.edit_source_field_index = 0
+            elif source_index == -1: # New source
+                self.editing_source_index = -1
+                self.edit_source_obj = {
+                    "url": "https://",
+                    "type": "base64",
+                    "refresh": 3600,
+                    "filter": "",
+                    "enabled": True,
+                    "priority": 1
+                }
+                self.show_source_edit = True
+                self.show_sources_list = False
+                self.edit_source_field_index = 0
+            else:
+                self.show_source_edit = False
+                self.show_sources_list = True
+                self.edit_source_obj = None
+        if self.live:
+            self.update_render()
+
+    def _get_input_modal(self, prompt, default_value=""):
+        # This needs a special way to get input without breaking Live.
+        # We'll use a simple approach: stop live, ask input, start live.
+        if not self.live:
+            return input(f"{prompt} [{default_value}]: ") or default_value
+
+        self.live.stop()
+        try:
+            # Re-enable echo and canonical mode for input
+            fd = sys.stdin.fileno()
+            old_settings = termios.tcgetattr(fd)
+            try:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+                val = input(f"\n{prompt} [{default_value}]: ") or default_value
+            finally:
+                tty.setcbreak(fd)
+            return val
+        finally:
+            self.live.start()
 
     def toggle_manual(self, callback=None):
         with self.lock:
@@ -657,6 +835,9 @@ class UI:
                     # F2 sequences
                     elif any(f2 in data for f2 in ['\x1bOQ', '\x1b[12~', '\x1b[[B', '\x1bO1Q', '\x1b[Q']):
                         self._handle_hotkey("F2")
+                    # F3 sequences
+                    elif any(f3 in data for f3 in ['\x1bOR', '\x1b[13~', '\x1b[[C', '\x1bO1R', '\x1b[R']):
+                        self._handle_hotkey("F3")
                     # F5 sequences
                     elif any(f5 in data for f5 in ['\x1b[15~', '\x1bOT', '\x1b[15;2~', '\x1b[15;5~']):
                         self._handle_hotkey("F5")
@@ -700,6 +881,70 @@ class UI:
                             with self.lock:
                                 self.show_message_modal = False
                             if self.live:
+                                self.update_render()
+                    # Sources List navigation
+                    elif self.show_sources_list:
+                        if any(up in data for up in ['\x1b[A', 'k']):
+                            with self.lock:
+                                self.selected_source_index = max(0, self.selected_source_index - 1)
+                            self.update_render()
+                        elif any(down in data for down in ['\x1b[B', 'j']):
+                            with self.lock:
+                                self.selected_source_index = min(len(self.config.sources) - 1, self.selected_source_index + 1)
+                            self.update_render()
+                        elif '\x1b' in data and len(data) == 1: # Escape
+                            self.toggle_sources()
+                        elif 'd' in data:
+                            callback = self.source_callback
+                            idx = self.selected_source_index
+                            if callback:
+                                threading.Thread(target=callback, args=("delete", idx, None), daemon=True).start()
+                        elif 'a' in data:
+                            self.toggle_source_edit(source_index=-1)
+                        elif '\n' in data or '\r' in data:
+                            self.toggle_source_edit(source_index=self.selected_source_index)
+                    # Source Edit navigation
+                    elif self.show_source_edit:
+                        if any(up in data for up in ['\x1b[A', 'k']):
+                            with self.lock:
+                                self.edit_source_field_index = max(0, self.edit_source_field_index - 1)
+                            self.update_render()
+                        elif any(down in data for down in ['\x1b[B', 'j']):
+                            with self.lock:
+                                self.edit_source_field_index = min(3, self.edit_source_field_index + 1)
+                            self.update_render()
+                        elif '\x1b' in data and len(data) == 1: # Escape
+                            self.toggle_source_edit()
+                        elif 's' in data:
+                            callback = self.source_callback
+                            idx = self.editing_source_index
+                            if callback:
+                                threading.Thread(target=callback, args=("save", idx, self.edit_source_obj), daemon=True).start()
+                            self.toggle_source_edit()
+                        elif '\n' in data or '\r' in data:
+                            # Prompt for value
+                            field_idx = self.edit_source_field_index
+                            fields = ["url", "refresh", "filter", "enabled"]
+                            field_name = fields[field_idx]
+                            current_val = self.edit_source_obj[field_name]
+
+                            if field_name == "enabled":
+                                with self.lock:
+                                    self.edit_source_obj["enabled"] = not self.edit_source_obj["enabled"]
+                                self.update_render()
+                            else:
+                                new_val = self._get_input_modal(f"Enter {field_name}", str(current_val))
+                                with self.lock:
+                                    if field_name == "refresh":
+                                        try:
+                                            # Try to parse as interval if it ends with h/m/s
+                                            from config_manager import parse_time_interval
+                                            self.edit_source_obj["refresh"] = parse_time_interval(new_val)
+                                        except:
+                                            try: self.edit_source_obj["refresh"] = int(new_val)
+                                            except: pass
+                                    else:
+                                        self.edit_source_obj[field_name] = new_val
                                 self.update_render()
                     # Enter key (manual refresh if not in manual mode)
                     elif '\n' in data or '\r' in data:
@@ -760,10 +1005,10 @@ class UI:
 
 ui_instance: Optional[UI] = None
 
-def get_ui(config_path: str = "config.yaml") -> UI:
+def get_ui(config_path: str = "config.yaml", config_manager=None) -> UI:
     global ui_instance
     if ui_instance is None:
-        ui_instance = UI(config_path)
+        ui_instance = UI(config_path, config_manager)
     return ui_instance
 
 class UILogHandler(logging.Handler):

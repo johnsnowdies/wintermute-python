@@ -63,7 +63,7 @@ class Wintermute:
         # Flags
         self._running = True
 
-        self.ui = get_ui(config_path)
+        self.ui = get_ui(config_path, config_manager=self.config_manager)
         self.ui.set_mode("TESTING")
 
         # Sing-Box config path
@@ -941,6 +941,39 @@ class Wintermute:
             self.logger.error(f"Error in load_from_usb: {e}")
             self.ui.show_message("Error", f"Critical error: {e}")
 
+    def handle_source_action(self, action, index, data):
+        """Handle sources management actions from UI"""
+        from config_manager import SourceConfig
+        try:
+            if action == "delete":
+                if 0 <= index < len(self.config.sources):
+                    del self.config.sources[index]
+                    self.config_manager.save()
+                    self.ui.add_app_log("[yellow]Source deleted and config saved[/yellow]")
+            elif action == "save":
+                new_src = SourceConfig(
+                    url=data["url"],
+                    type=data["type"],
+                    refresh=data["refresh"],
+                    filter=data["filter"],
+                    enabled=data["enabled"],
+                    priority=data["priority"]
+                )
+                if index == -1: # New
+                    self.config.sources.append(new_src)
+                    self.ui.add_app_log("[green]New source added and config saved[/green]")
+                else: # Update
+                    self.config.sources[index] = new_src
+                    self.ui.add_app_log("[green]Source updated and config saved[/green]")
+                self.config_manager.save()
+
+            # Update UI list
+            self.ui.set_status_data(sources=[s.url for s in self.config.sources])
+
+        except Exception as e:
+            self.logger.error(f"Error handling source action {action}: {e}")
+            self.ui.add_app_log(f"[red]Error saving config: {e}[/red]")
+
     def run(self):
         """Application entry point"""
 
@@ -949,6 +982,7 @@ class Wintermute:
 
         # Register hotkeys
         self.ui.register_hotkey("F2", self.manual_profile_selection)
+        self.ui.register_hotkey("F3", lambda: self.ui.toggle_sources(self.handle_source_action))
         self.ui.register_hotkey("F5", self.force_reload_profiles)
         self.ui.register_hotkey("F6", self.switch_profile)
         self.ui.register_hotkey("F7", self.retest)

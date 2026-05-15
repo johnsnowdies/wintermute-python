@@ -119,17 +119,16 @@ class ConfigManager:
 
         sources = []
         for src in data.get("sources", []):
-            if src.get("enabled", True):
-                sources.append(
-                    SourceConfig(
-                        url=src["url"],
-                        type=src.get("type", "base64"),
-                        refresh=parse_time_interval(src.get("refresh", "1h")),
-                        filter=src.get("filter", ""),
-                        enabled=src.get("enabled", True),
-                        priority=src.get("priority", 1),
-                    )
+            sources.append(
+                SourceConfig(
+                    url=src["url"],
+                    type=src.get("type", "base64"),
+                    refresh=parse_time_interval(src.get("refresh", "1h")),
+                    filter=src.get("filter", ""),
+                    enabled=src.get("enabled", True),
+                    priority=src.get("priority", 1),
                 )
+            )
 
         # Logging
         log = data.get("logging", {})
@@ -202,6 +201,43 @@ class ConfigManager:
         )
 
         return self.config
+
+    def save(self):
+        """Save current configuration to file"""
+        if not self.config:
+            return
+
+        # Read existing file to preserve structure where possible (best effort with PyYAML)
+        with open(self.config_path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f)
+
+        # Update sources
+        data["sources"] = []
+        for src in self.config.sources:
+            src_dict = {
+                "url": src.url,
+                "enabled": src.enabled
+            }
+            # Only add optional fields if they are not default or were present
+            if src.type != "base64": src_dict["type"] = src.type
+            if src.refresh != 3600:
+                # convert back to string if possible, or just seconds
+                if src.refresh % 3600 == 0:
+                    src_dict["refresh"] = f"{src.refresh // 3600}h"
+                elif src.refresh % 60 == 0:
+                    src_dict["refresh"] = f"{src.refresh // 60}m"
+                else:
+                    src_dict["refresh"] = f"{src.refresh}s"
+            else:
+                src_dict["refresh"] = "1h"
+
+            if src.filter: src_dict["filter"] = src.filter
+            if src.priority != 1: src_dict["priority"] = src.priority
+
+            data["sources"].append(src_dict)
+
+        with open(self.config_path, "w", encoding="utf-8") as f:
+            yaml.dump(data, f, sort_keys=False, allow_unicode=True, default_flow_style=False)
 
     def get_config(self) -> Config:
         if self.config is None:
