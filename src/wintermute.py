@@ -466,7 +466,11 @@ class Wintermute:
             and self.config.testing.healthcheck_content_md5
             else False,
             prefer_xray=self.config.selection.prefer_xray,
+            on_progress=self.ui.set_progress,
         )
+
+        # Clear progress after tests
+        self.ui.set_progress(0, 0)
 
         # Update UI with test results
         self.ui.set_status_data(test_results=self.profile_manager.working_profiles)

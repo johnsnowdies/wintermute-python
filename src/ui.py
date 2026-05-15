@@ -3,11 +3,12 @@ import re
 from datetime import datetime
 from typing import Optional
 
-from rich.console import Console
+from rich.console import Console, Group
 from rich.layout import Layout
 from rich.live import Live
 from rich.panel import Panel
 from rich.text import Text
+from rich.progress import ProgressBar
 from rich.logging import RichHandler
 import logging
 
@@ -49,6 +50,8 @@ class UI:
         self.last_update = None
         self.test_results = []
         self.core_type = "None"
+        self.progress_current = 0
+        self.progress_total = 0
 
     def _clean_name(self, name: str) -> str:
         if not name:
@@ -103,10 +106,27 @@ class UI:
         return footer_content
 
     def _get_status_panel(self):
+        items = []
         content = Text()
 
         status_width = int(self.console.width * 0.3) - 4
         if status_width < 20: status_width = 20
+
+        # 0) Progress Bar (if in TESTING mode)
+        if self.mode == "TESTING" and self.progress_total > 0:
+            content.append("Testing Progress:\n", style="bold green")
+            # We add a small offset to account for panel borders and padding
+            bar_width = status_width - 2
+            if bar_width < 10: bar_width = 10
+
+            bar = ProgressBar(total=self.progress_total, completed=self.progress_current, width=bar_width)
+
+            # Since content is Text, we can't directly append ProgressBar.
+            # We will use Group later.
+            items.append(content)
+            items.append(bar)
+            items.append(Text("\n")) # Spacer
+            content = Text() # Reset content for next parts
 
         # 1) Uptime
         uptime = datetime.now() - self.start_time
@@ -177,7 +197,8 @@ class UI:
                 content.append(line)
                 content.append("\n")
 
-        return Panel(content, title="Status", border_style="green")
+        items.append(content)
+        return Panel(Group(*items), title="Status", border_style="green")
 
     def update_render(self):
         with self.lock:
@@ -219,6 +240,13 @@ class UI:
     def set_core_type(self, core_type: str):
         with self.lock:
             self.core_type = core_type
+        if self.live:
+            self.update_render()
+
+    def set_progress(self, current: int, total: int):
+        with self.lock:
+            self.progress_current = current
+            self.progress_total = total
         if self.live:
             self.update_render()
 

@@ -522,11 +522,13 @@ class ProfileTester:
         timeout: int,
         test_real: bool,
         config: str = "config.yaml",
+        on_progress: Optional[Callable[[int, int], None]] = None,
     ) -> List[Profile]:
         """Asynchronous profile testing"""
         setup_logger(__name__)
         logger = get_logger(__name__)
-        logger.info(f"Testing {min(len(profiles), max_test)} profiles...")
+        total_to_test = min(len(profiles), max_test)
+        logger.info(f"Testing {total_to_test} profiles...")
 
         # Creating tasks for parallel testing
         tasks = []
@@ -537,8 +539,19 @@ class ProfileTester:
             )
             tasks.append(task)
 
-        # Running all tasks in parallel
-        results = await asyncio.gather(*tasks)
+        # Running tasks and reporting progress
+        results = []
+        completed = 0
+
+        if on_progress:
+            on_progress(0, total_to_test)
+
+        for coro in asyncio.as_completed(tasks):
+            res = await coro
+            results.append(res)
+            completed += 1
+            if on_progress:
+                on_progress(completed, total_to_test)
 
         # Filtering successful profiles
         tested_profiles = [p for p in results if p is not None]
@@ -560,6 +573,7 @@ class ProfileTester:
         timeout: int = 1,
         test_real: bool = False,
         config: str = "config.yaml",
+        on_progress: Optional[Callable[[int, int], None]] = None,
     ) -> List[Profile]:
         """
         Tests profiles and returns sorted by latency
@@ -567,7 +581,7 @@ class ProfileTester:
         """
         return asyncio.run(
             ProfileTester._test_profiles_async(
-                profiles, max_test, timeout, test_real, config
+                profiles, max_test, timeout, test_real, config, on_progress
             )
         )
 
@@ -695,6 +709,7 @@ class ProfileManager:
         min_latency: int = 500,
         test_real: bool = False,
         prefer_xray: bool = False,
+        on_progress: Optional[Callable[[int, int], None]] = None,
     ) -> Optional[Profile]:
         """
         Tests profiles and selects the best one
@@ -703,7 +718,7 @@ class ProfileManager:
             profiles_to_test = self.profiles.copy()
 
         self.working_profiles = ProfileTester.test_profiles(
-            profiles_to_test, max_test, timeout, test_real, self.config
+            profiles_to_test, max_test, timeout, test_real, self.config, on_progress
         )
 
         if not self.working_profiles:
