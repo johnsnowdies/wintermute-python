@@ -62,7 +62,7 @@ class Wintermute:
         # Flags
         self._running = True
 
-        self.ui = get_ui()
+        self.ui = get_ui(config_path)
         self.ui.set_mode("TESTING")
 
         # Sing-Box config path

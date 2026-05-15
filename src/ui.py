@@ -3,6 +3,7 @@ import re
 from datetime import datetime
 from typing import Optional
 
+from config_manager import ConfigManager
 from rich.console import Console, Group
 from rich.layout import Layout
 from rich.live import Live
@@ -14,7 +15,7 @@ from rich.cells import cell_len
 import logging
 
 class UI:
-    def __init__(self):
+    def __init__(self, config_path: str = "config.yaml",):
         self.console = Console()
         self.layout = Layout()
 
@@ -24,6 +25,9 @@ class UI:
 
         self.lock = threading.Lock()
         self.live: Optional[Live] = None
+
+        self.config_manager = ConfigManager(config_path)
+        self.config = self.config_manager.load()
 
         self._setup_layout()
 
@@ -195,17 +199,22 @@ class UI:
             content.append(f"Test Results ({total_results}):\n", style="bold magenta")
             # Show top results
             for p in self.test_results[:display_count]:
-                name = self._clean_name(p.comment or p.host)
-                is_current = name == self.profile_name
+                raw_name = p.comment or p.host
+                is_current = self._clean_name(raw_name) == self.profile_name
+
+                if p.comment:
+                    name = self._clean_name(f"{p.comment} ({p.host})")
+                else:
+                    name = self._clean_name(p.host)
 
                 ping = p.latency
                 if ping is None:
                     ping_str = "TIMEOUT"
                     ping_style = "red"
-                elif ping < 200:
+                elif ping < self.config.selection.min_acceptable_latency:
                     ping_str = f"{ping}ms"
                     ping_style = "green"
-                elif ping < 500:
+                elif ping < self.config.selection.min_acceptable_latency + self.config.selection.min_acceptable_latency / 2:
                     ping_str = f"{ping}ms"
                     ping_style = "yellow"
                 else:
@@ -374,10 +383,10 @@ class UI:
 
 ui_instance: Optional[UI] = None
 
-def get_ui() -> UI:
+def get_ui(config_path) -> UI:
     global ui_instance
     if ui_instance is None:
-        ui_instance = UI()
+        ui_instance = UI(config_path)
     return ui_instance
 
 class UILogHandler(logging.Handler):
