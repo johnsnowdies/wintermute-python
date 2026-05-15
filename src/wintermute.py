@@ -762,6 +762,47 @@ class Wintermute:
              self.ui.set_mode("WORKING")
              self.ui.add_app_log(f"[green]Switched to[/green] {best.comment or best.host}")
 
+    def retest(self):
+        """Reset broken profiles and start a full re-test"""
+        self.logger.info("Manual retest requested (F7)")
+        self.ui.add_app_log("[yellow]Manual retest started. Clearing broken profiles...[/yellow]")
+
+        # Stop engines
+        if self.singbox_manager:
+            self.singbox_manager.stop()
+            self.singbox_manager = None
+        if self.xray_manager:
+            self.xray_manager.stop()
+            self.xray_manager = None
+
+        # Stop healthchecker
+        if self.healthchecker:
+            self.healthchecker.stop()
+            self.healthchecker = None
+
+        # Reset state
+        self.profile_manager.clear_broken_profiles()
+        self.ui.set_status_data(broken_profiles=set())
+
+        self.ui.set_mode("TESTING")
+        self.ui.set_profile("Retesting...")
+        self.ui.set_health("RETEST", "yellow")
+
+        # Run tests
+        if self.load_and_select_profile():
+            selected = self.profile_manager.get_selected_profile()
+            if selected:
+                self.ui.set_profile(selected.comment or selected.host)
+                if self.setup_singbox():
+                    self.ui.set_mode("WORKING")
+                    self.ui.add_app_log(f"[green]Retest complete. Selected:[/green] {selected.comment or selected.host}")
+                    # Re-start healthcheck
+                    self.start_healthcheck()
+        else:
+            self.ui.set_mode("ERROR")
+            self.ui.set_profile("No working profiles")
+            self.ui.add_app_log("[red]Retest failed: No working profiles found[/red]")
+
     def run(self):
         """Application entry point"""
 
@@ -771,6 +812,7 @@ class Wintermute:
         # Register hotkeys
         self.ui.register_hotkey("F5", self.force_reload_profiles)
         self.ui.register_hotkey("F6", self.switch_profile)
+        self.ui.register_hotkey("F7", self.retest)
 
         setup_logger(
             level=self.config.logging.level,

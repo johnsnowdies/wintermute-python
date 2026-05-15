@@ -424,7 +424,9 @@ class UI:
         header.append("[F5]", style="bold cyan")
         header.append(" Reload  ", style="white")
         header.append("[F6]", style="bold cyan")
-        header.append(" Switch", style="white")
+        header.append(" Switch  ", style="white")
+        header.append("[F7]", style="bold cyan")
+        header.append(" Retest", style="white")
         return header
 
     def _get_help_panel(self):
@@ -435,7 +437,9 @@ class UI:
         help_text.append(" [F5] ", style="bold cyan")
         help_text.append("- Reload profiles from sources (URLs)\n")
         help_text.append(" [F6] ", style="bold cyan")
-        help_text.append("- Switch to the next best profile (current marked as broken)\n\n")
+        help_text.append("- Switch to the next best profile (current marked as broken)\n")
+        help_text.append(" [F7] ", style="bold cyan")
+        help_text.append("- Clear broken profiles and start full re-test\n\n")
         help_text.append(" [Ctrl+C] ", style="bold red")
         help_text.append("- Terminate application\n\n")
         help_text.append(" More features coming soon...", style="italic dim")
@@ -492,6 +496,9 @@ class UI:
                     # F6 sequences
                     elif any(f6 in data for f6 in ['\x1b[17~', '\x1bOU', '\x1b[17;2~', '\x1b[17;5~']):
                         self._handle_hotkey("F6")
+                    # F7 sequences
+                    elif any(f7 in data for f7 in ['\x1b[18~', '\x1bOV', '\x1b[18;2~', '\x1b[18;5~']):
+                        self._handle_hotkey("F7")
                     # Enter key (manual refresh)
                     elif '\n' in data or '\r' in data:
                         if self.live:

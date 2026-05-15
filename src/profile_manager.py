@@ -707,7 +707,12 @@ class ProfileManager:
         """Marks a profile as broken in memory"""
         with self._lock:
             self.broken_profiles.add(profile.raw_url)
-            self.logger.info(f"Profile marked as broken: {profile.comment or profile.host}")
+
+    def clear_broken_profiles(self):
+        """Clears the list of broken profiles"""
+        with self._lock:
+            self.broken_profiles.clear()
+        self.logger.info("Broken profiles list cleared")
 
     def is_profile_broken(self, profile: Profile) -> bool:
         """Checks if a profile is marked as broken"""
