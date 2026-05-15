@@ -101,6 +101,13 @@ class UI:
         self.selected_config_field_index = 0
         self.config_callback = None # callback() for saving
 
+        # Input state
+        self.input_active = False
+        self.input_prompt = ""
+        self.input_value = ""
+        self.input_cursor = 0
+        self.input_event = threading.Event()
+
     def _clean_text(self, text: str) -> str:
         if not text:
             return ""
@@ -313,7 +320,9 @@ class UI:
             self.layout["header"].update(self._get_header())
             self.layout["footer"].update(self._get_footer())
 
-            if self.show_help:
+            if self.input_active:
+                self.layout["body"].update(self._get_input_panel())
+            elif self.show_help:
                 self.layout["body"].update(self._get_help_panel())
             elif self.show_manual:
                 self.layout["body"].update(self._get_manual_panel())
@@ -763,25 +772,51 @@ class UI:
         if self.live:
             self.update_render()
 
+    def _get_input_panel(self):
+        content = Text()
+        content.append(f"\n {self.input_prompt}\n\n", style="bold yellow")
+
+        # Draw input field
+        prefix = " > "
+        text_before_cursor = self.input_value[:self.input_cursor]
+        char_at_cursor = self.input_value[self.input_cursor] if self.input_cursor < len(self.input_value) else " "
+        text_after_cursor = self.input_value[self.input_cursor+1:] if self.input_cursor < len(self.input_value) else ""
+
+        content.append(prefix)
+        content.append(text_before_cursor)
+        content.append(char_at_cursor, style="reverse underline bold cyan")
+        content.append(text_after_cursor)
+        content.append("\n\n")
+        content.append(" [Enter] Submit  [Esc] Cancel ", style="dim")
+
+        return Align.center(
+            Panel(content, title="Input", border_style="cyan", expand=False, width=max(60, len(self.input_prompt) + 10)),
+            vertical="middle"
+        )
+
     def _get_input_modal(self, prompt, default_value=""):
-        # This needs a special way to get input without breaking Live.
-        # We'll use a simple approach: stop live, ask input, start live.
-        if not self.live:
+        # This is now integrated into the TUI
+        if not HAS_TERMIOS or not self.live:
             return input(f"{prompt} [{default_value}]: ") or default_value
 
-        self.live.stop()
-        try:
-            # Re-enable echo and canonical mode for input
-            fd = sys.stdin.fileno()
-            old_settings = termios.tcgetattr(fd)
-            try:
-                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-                val = input(f"\n{prompt} [{default_value}]: ") or default_value
-            finally:
-                tty.setcbreak(fd)
-            return val
-        finally:
-            self.live.start()
+        with self.lock:
+            self.input_active = True
+            self.input_prompt = prompt
+            self.input_value = str(default_value)
+            self.input_cursor = len(self.input_value)
+            self.input_event.clear()
+
+        self.update_render()
+        self.input_event.wait()
+
+        with self.lock:
+            result = self.input_value
+            self.input_active = False
+            if result == "__CANCEL__":
+                result = default_value
+
+        self.update_render()
+        return result
 
     def toggle_manual(self, callback=None):
         with self.lock:
@@ -936,6 +971,42 @@ class UI:
                     if not data:
                         continue
 
+                    if self.input_active:
+                        if '\x1b' in data: # Escape sequences
+                            if data == '\x1b': # Just Esc
+                                with self.lock:
+                                    self.input_value = "__CANCEL__"
+                                    self.input_event.set()
+                            elif data == '\x1b[C': # Right
+                                with self.lock:
+                                    self.input_cursor = min(len(self.input_value), self.input_cursor + 1)
+                            elif data == '\x1b[D': # Left
+                                with self.lock:
+                                    self.input_cursor = max(0, self.input_cursor - 1)
+                            elif data == '\x1b[1~' or data == '\x1b[H': # Home
+                                with self.lock:
+                                    self.input_cursor = 0
+                            elif data == '\x1b[4~' or data == '\x1b[F': # End
+                                with self.lock:
+                                    self.input_cursor = len(self.input_value)
+                            elif data == '\x1b[3~': # Delete
+                                with self.lock:
+                                    if self.input_cursor < len(self.input_value):
+                                        self.input_value = self.input_value[:self.input_cursor] + self.input_value[self.input_cursor+1:]
+                        elif '\n' in data or '\r' in data:
+                            self.input_event.set()
+                        elif data == '\x7f' or data == '\b': # Backspace
+                            with self.lock:
+                                if self.input_cursor > 0:
+                                    self.input_value = self.input_value[:self.input_cursor-1] + self.input_value[self.input_cursor:]
+                                    self.input_cursor -= 1
+                        elif len(data) == 1 and ord(data) >= 32: # Printable char
+                            with self.lock:
+                                self.input_value = self.input_value[:self.input_cursor] + data + self.input_value[self.input_cursor:]
+                                self.input_cursor += 1
+                        self.update_render()
+                        continue
+
                     # F1 sequences
                     if any(f1 in data for f1 in ['\x1bOP', '\x1b[11~', '\x1b[[A', '\x1bO1P', '\x1b[P']):
                         self._handle_hotkey("F1")
@@ -1011,30 +1082,39 @@ class UI:
                                 threading.Thread(target=callback, daemon=True).start()
                             self.toggle_config_edit()
                         elif '\n' in data or '\r' in data:
-                            # Change value
-                            field = fields[self.selected_config_field_index]
-                            obj = field['obj']
-                            attr = field['attr']
-                            ftype = field['type']
+                            # Change value in a separate thread to not block input
+                            def handle_config_change():
+                                with self.lock:
+                                    field = fields[self.selected_config_field_index]
+                                    obj = field['obj']
+                                    attr = field['attr']
+                                    ftype = field['type']
+                                    current_val = str(field['val'])
+                                    label = field['label']
 
-                            if ftype == bool:
-                                setattr(obj, attr, not getattr(obj, attr))
-                            else:
-                                current_val = str(field['val'])
-                                new_val = self._get_input_modal(field['label'], current_val)
-                                try:
-                                    if ftype == int:
-                                        setattr(obj, attr, int(new_val))
-                                    elif ftype == list:
-                                        setattr(obj, attr, [s.strip() for s in new_val.split(",") if s.strip()])
-                                    elif ftype == "interval":
-                                        setattr(obj, attr, parse_time_interval(new_val))
-                                    else:
-                                        setattr(obj, attr, new_val)
-                                except Exception as e:
-                                    logging.error(f"Error setting config field: {e}")
-                                    self.show_message("Error", str(e))
-                            self.update_render()
+                                if ftype == bool:
+                                    with self.lock:
+                                        setattr(obj, attr, not getattr(obj, attr))
+                                    self.update_render()
+                                else:
+                                    new_val = self._get_input_modal(label, current_val)
+                                    with self.lock:
+                                        try:
+                                            if ftype == int:
+                                                setattr(obj, attr, int(new_val))
+                                            elif ftype == list:
+                                                setattr(obj, attr, [s.strip() for s in new_val.split(",") if s.strip()])
+                                            elif ftype == "interval":
+                                                from config_manager import parse_time_interval
+                                                setattr(obj, attr, parse_time_interval(new_val))
+                                            else:
+                                                setattr(obj, attr, new_val)
+                                        except Exception as e:
+                                            logging.error(f"Error setting config field: {e}")
+                                            self.show_message("Error", str(e))
+                                    self.update_render()
+
+                            threading.Thread(target=handle_config_change, daemon=True).start()
                     # Sources List navigation
                     elif self.show_sources_list:
                         if any(up in data for up in ['\x1b[A', 'k']):
@@ -1075,30 +1155,34 @@ class UI:
                                 threading.Thread(target=callback, args=("save", idx, self.edit_source_obj), daemon=True).start()
                             self.toggle_source_edit()
                         elif '\n' in data or '\r' in data:
-                            # Prompt for value
-                            field_idx = self.edit_source_field_index
-                            fields = ["url", "refresh", "filter", "enabled"]
-                            field_name = fields[field_idx]
-                            current_val = self.edit_source_obj[field_name]
+                            # Prompt for value in thread
+                            def handle_source_edit():
+                                with self.lock:
+                                    field_idx = self.edit_source_field_index
+                                    fields = ["url", "refresh", "filter", "enabled"]
+                                    field_name = fields[field_idx]
+                                    current_val = self.edit_source_obj[field_name]
 
-                            if field_name == "enabled":
-                                with self.lock:
-                                    self.edit_source_obj["enabled"] = not self.edit_source_obj["enabled"]
-                                self.update_render()
-                            else:
-                                new_val = self._get_input_modal(f"Enter {field_name}", str(current_val))
-                                with self.lock:
-                                    if field_name == "refresh":
-                                        try:
-                                            # Try to parse as interval if it ends with h/m/s
-                                            from config_manager import parse_time_interval
-                                            self.edit_source_obj["refresh"] = parse_time_interval(new_val)
-                                        except:
-                                            try: self.edit_source_obj["refresh"] = int(new_val)
-                                            except: pass
-                                    else:
-                                        self.edit_source_obj[field_name] = new_val
-                                self.update_render()
+                                if field_name == "enabled":
+                                    with self.lock:
+                                        self.edit_source_obj["enabled"] = not self.edit_source_obj["enabled"]
+                                    self.update_render()
+                                else:
+                                    new_val = self._get_input_modal(f"Enter {field_name}", str(current_val))
+                                    with self.lock:
+                                        if field_name == "refresh":
+                                            try:
+                                                # Try to parse as interval if it ends with h/m/s
+                                                from config_manager import parse_time_interval
+                                                self.edit_source_obj["refresh"] = parse_time_interval(new_val)
+                                            except:
+                                                try: self.edit_source_obj["refresh"] = int(new_val)
+                                                except: pass
+                                        else:
+                                            self.edit_source_obj[field_name] = new_val
+                                    self.update_render()
+
+                            threading.Thread(target=handle_source_edit, daemon=True).start()
                     # Enter key (manual refresh if not in manual mode)
                     elif '\n' in data or '\r' in data:
                         if self.live:
