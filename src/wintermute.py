@@ -15,6 +15,7 @@ from network_setup import (
     check_interface_exists,
     cleanup_iptables_rules,
     setup_iptables_rules,
+    setup_linux_tun_routing,
 )
 from profile_manager import Profile, ProfileManager
 from singbox_manager import SingboxManager
@@ -255,32 +256,38 @@ class Wintermute:
             })
         else:
             # TUN for Xray
+            tun_ip = f"{network_config.tun_subnet.split('/')[0].rsplit('.', 1)[0]}.1"
             inbounds.append({
                 "protocol": "tun",
                 "tag": "tun-in",
                 "settings": {
                     "name": network_config.tun_name,
                     "mtu": network_config.mtu,
-                    "address": [network_config.tun_subnet.split('/')[0]],
+                    "gateway": [f"{tun_ip}/{network_config.tun_subnet.split('/')[1]}"],
+                    "dns": ["1.1.1.1"],
                     "autoSystemRoutingTable": True,
                     "autoOutboundsInterface": network_config.interface
                 },
                 "sniffing": {
                     "enabled": True,
-                    "destOverride": ["http", "tls", "quic"],
+                    "destOverride": ["http", "tls", "quic", "fakedns"],
                     "metadataOnly": False
                 }
             })
 
         # DNS configuration for TUN mode
         dns_config = {}
+        fakedns_config = []
         if not proxy_mode:
+            fakedns_config = [{"ipPool": "198.18.0.0/15", "poolSize": 65535}]
             dns_config = {
                 "servers": [
+                    "fakedns",
                     "https://1.1.1.1/dns-query",
                     "localhost"
                 ],
-                "queryStrategy": "UseIP"
+                "queryStrategy": "UseIP",
+                "tag": "dns-internal"
             }
 
         # Outbound translation
@@ -300,7 +307,10 @@ class Wintermute:
             },
             "streamSettings": {
                 "network": outbound.get("transport", {}).get("type", "tcp"),
-                "security": "none"
+                "security": "none",
+                "sockopt": {
+                    "mark": 255
+                }
             }
         }
 
@@ -362,17 +372,24 @@ class Wintermute:
             "inbounds": inbounds,
             "outbounds": [
                 xray_outbound,
-                {"protocol": "freedom", "tag": "direct"},
+                {"protocol": "dns", "tag": "dns-out"},
+                {"protocol": "freedom", "tag": "direct", "streamSettings": {"sockopt": {"mark": 255}}},
                 {"protocol": "blackhole", "tag": "block"}
             ],
             "routing": {
-                "domainStrategy": "AsIs",
+                "domainStrategy": "IPIfNonMatch",
                 "rules": [
+                    {"type": "field", "inboundTag": ["tun-in"], "port": 53, "outboundTag": "dns-out"},
+                    {"type": "field", "protocol": ["dns"], "outboundTag": "dns-out"},
+                    {"type": "field", "ip": ["198.18.0.0/15"], "outboundTag": "proxy"},
                     {"type": "field", "outboundTag": "direct", "ip": ["127.0.0.0/8"] + network_config.exclude_subnets},
                     {"type": "field", "outboundTag": "proxy", "network": "tcp,udp"}
                 ]
             }
         }
+
+        if fakedns_config:
+            config["fakedns"] = fakedns_config
 
         if dns_config:
             config["dns"] = dns_config
@@ -473,6 +490,19 @@ class Wintermute:
             self.xray_manager = XrayManager(xray_path, config_path)
             if not self.xray_manager.start():
                 return False
+
+            # Manual routing for Linux Xray TUN
+            if sys.platform == "linux" and not proxy_mode:
+                tun_ip = f"{self.config.network.tun_subnet.split('/')[0].rsplit('.', 1)[0]}.1"
+                # Use a small delay to let Xray create the interface
+                time.sleep(1)
+                self._iptables_rules += setup_linux_tun_routing(
+                    tun_interface=self.config.network.tun_name,
+                    tun_addr=f"{tun_ip}/{self.config.network.tun_subnet.split('/')[1]}",
+                    proxy_host=profile.host,
+                    interface=self.config.network.interface,
+                    exclude_subnets=self.config.network.exclude_subnets,
+                )
         else:
             config = self._create_singbox_config(
                 outbound,
@@ -641,7 +671,7 @@ class Wintermute:
             self.profile_manager.stop_auto_refresh()
 
         # Cleanup iptables rules before Sing-Box termination
-        if self._iptables_rules and self.config.network.ipv4_forward:
+        if self._iptables_rules:
             cleanup_iptables_rules(self._iptables_rules)
             self._iptables_rules = []
 

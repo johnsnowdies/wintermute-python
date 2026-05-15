@@ -1,7 +1,80 @@
 import subprocess
-from typing import List
+import socket
+from typing import List, Optional
 
 from logger import get_logger, setup_logger
+
+
+def get_default_gateway() -> Optional[str]:
+    """Returns current default gateway IP"""
+    try:
+        result = subprocess.run(
+            ["ip", "route", "show", "default"], capture_output=True, text=True
+        )
+        if result.returncode == 0 and result.stdout:
+            parts = result.stdout.split()
+            if "via" in parts:
+                return parts[parts.index("via") + 1]
+    except Exception:
+        pass
+    return None
+
+
+def resolve_hostname(hostname: str) -> Optional[str]:
+    """Resolves hostname to IP address"""
+    try:
+        return socket.gethostbyname(hostname)
+    except Exception:
+        return None
+
+
+def setup_linux_tun_routing(
+    tun_interface: str,
+    tun_addr: str,
+    proxy_host: str,
+    interface: str,
+    exclude_subnets: List[str],
+) -> List[str]:
+    """
+    Sets up routing for TUN interface on Linux manually (as Xray doesn't do it automatically)
+    """
+    rules = []
+    setup_logger(name=__name__)
+    logger = get_logger(__name__)
+
+    logger.info(f"Setting up manual TUN routing for {tun_interface}...")
+
+    # 1. Assign IP address
+    subprocess.run(["ip", "addr", "add", tun_addr, "dev", tun_interface], check=False)
+    subprocess.run(["ip", "link", "set", "dev", tun_interface, "up"], check=False)
+
+    # 2. Add route to proxy server via original gateway
+    gw = get_default_gateway()
+    proxy_ip = resolve_hostname(proxy_host) or proxy_host
+
+    if gw and proxy_ip:
+        rule = f"ip route add {proxy_ip} via {gw} dev {interface}"
+        logger.info(f"   Adding bypass route for proxy: {rule}")
+        subprocess.run(rule.split(), check=False)
+        rules.append(rule)
+
+    # 3. Add routes for excluded subnets via original gateway
+    if gw:
+        for subnet in exclude_subnets:
+            rule = f"ip route add {subnet} via {gw} dev {interface}"
+            subprocess.run(rule.split(), check=False)
+            rules.append(rule)
+
+    # 4. Add default routes via TUN (two-halves approach)
+    rule1 = f"ip route add 0.0.0.0/1 dev {tun_interface}"
+    rule2 = f"ip route add 128.0.0.0/1 dev {tun_interface}"
+    subprocess.run(rule1.split(), check=False)
+    subprocess.run(rule2.split(), check=False)
+    rules.append(rule1)
+    rules.append(rule2)
+
+    logger.info("Manual TUN routing applied")
+    return rules
 
 
 def setup_iptables_rules(
@@ -150,6 +223,12 @@ def cleanup_iptables_rules(rules: List[str]):
         capture_output=True,
         check=False,
     )
+
+    # Removing manual routes
+    for rule in reversed(rules):
+        if rule.startswith("ip route add"):
+            del_rule = rule.replace(" add ", " del ")
+            subprocess.run(del_rule.split(), capture_output=True, check=False)
 
     # Clearing the routing table
     subprocess.run(
