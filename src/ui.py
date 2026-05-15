@@ -75,6 +75,9 @@ class UI:
         self.show_help = False
         self.hotkeys = {}
         self.broken_profiles = set()
+        self.show_manual = False
+        self.selected_profile_index = 0
+        self.manual_callback = None
 
     def _clean_text(self, text: str) -> str:
         if not text:
@@ -290,6 +293,8 @@ class UI:
 
             if self.show_help:
                 self.layout["body"].update(self._get_help_panel())
+            elif self.show_manual:
+                self.layout["body"].update(self._get_manual_panel())
             else:
                 self.layout["body"].update(self.main_layout)
                 self.main_layout["left"]["app"].update(self._get_panel(self.app_logs, "Application Logs"))
@@ -421,6 +426,8 @@ class UI:
         header = Text()
         header.append(" [F1]", style="bold cyan")
         header.append(" Help  ", style="white")
+        header.append("[F2]", style="bold cyan")
+        header.append(" Manual  ", style="white")
         header.append("[F5]", style="bold cyan")
         header.append(" Reload  ", style="white")
         header.append("[F6]", style="bold cyan")
@@ -434,12 +441,18 @@ class UI:
         help_text.append("\n Wintermute Hotkeys\n\n", style="bold yellow")
         help_text.append(" [F1] ", style="bold cyan")
         help_text.append("- Toggle this help screen\n")
+        help_text.append(" [F2] ", style="bold cyan")
+        help_text.append("- Manual profile selection\n")
         help_text.append(" [F5] ", style="bold cyan")
         help_text.append("- Reload profiles from sources (URLs)\n")
         help_text.append(" [F6] ", style="bold cyan")
         help_text.append("- Switch to the next best profile (current marked as broken)\n")
         help_text.append(" [F7] ", style="bold cyan")
         help_text.append("- Clear broken profiles and start full re-test\n\n")
+        help_text.append(" [Arrows] ", style="bold cyan")
+        help_text.append("- Navigate in manual selection mode\n")
+        help_text.append(" [Enter] ", style="bold cyan")
+        help_text.append("- Select profile or refresh UI\n\n")
         help_text.append(" [Ctrl+C] ", style="bold red")
         help_text.append("- Terminate application\n\n")
         help_text.append(" More features coming soon...", style="italic dim")
@@ -449,8 +462,122 @@ class UI:
     def toggle_help(self):
         with self.lock:
             self.show_help = not self.show_help
+            if self.show_help:
+                self.show_manual = False
         if self.live:
             self.update_render()
+
+    def toggle_manual(self, callback=None):
+        with self.lock:
+            if not self.test_results:
+                return
+            self.show_manual = not self.show_manual
+            if self.show_manual:
+                self.show_help = False
+                self.manual_callback = callback
+                # Set initial selection to current profile if found
+                self.selected_profile_index = 0
+                for i, p in enumerate(self.test_results):
+                    raw_name = p.comment or p.host
+                    if self._clean_name(raw_name) == self.profile_name:
+                        self.selected_profile_index = i
+                        break
+        if self.live:
+            self.update_render()
+
+    def _get_manual_panel(self):
+        content = Text()
+        content.append("\n Manual Profile Selection\n\n", style="bold yellow")
+
+        if not self.test_results:
+            content.append(" No results available.", style="italic dim")
+            return Panel(content, title="Manual Selection", border_style="cyan")
+
+        # Usable height for the list
+        # Header (1) + Help title (1) + padding (3) + footer (1) + borders (2)
+        usable_height = self.console.height - 8
+        if usable_height < 5: usable_height = 5
+
+        total = len(self.test_results)
+
+        # Calculate scroll window
+        start_idx = 0
+        if self.selected_profile_index >= usable_height // 2:
+            start_idx = self.selected_profile_index - usable_height // 2
+
+        if start_idx + usable_height > total:
+            start_idx = max(0, total - usable_height)
+
+        end_idx = min(total, start_idx + usable_height)
+
+        if start_idx > 0:
+            content.append("  ↑ ... more profiles above\n", style="dim")
+
+        for i in range(start_idx, end_idx):
+            p = self.test_results[i]
+            is_selected = (i == self.selected_profile_index)
+            is_broken = p.raw_url in self.broken_profiles
+
+            # Reusing status panel formatting logic
+            raw_name = p.comment or p.host
+            is_current = self._clean_name(raw_name) == self.profile_name
+
+            if p.comment:
+                name = self._clean_name(f"{p.comment} ({p.host})")
+            else:
+                name = self._clean_name(p.host)
+
+            ping = p.latency
+            if ping is None:
+                ping_str = "TIMEOUT"
+                ping_style = "red"
+            elif ping < self.config.selection.min_acceptable_latency:
+                ping_str = f"{ping}ms"
+                ping_style = "green"
+            elif ping < self.config.selection.min_acceptable_latency + self.config.selection.min_acceptable_latency / 2:
+                ping_str = f"{ping}ms"
+                ping_style = "yellow"
+            else:
+                ping_str = f"{ping}ms"
+                ping_style = "red"
+
+            if is_broken:
+                ping_style = "dim gray"
+
+            protocol_char = "X" if p.extra.get('type') == 'xhttp' else "S"
+            protocol_style = "bold green" if p.extra.get('type') == 'xhttp' else "bold orange3"
+
+            if is_selected:
+                style = "bold white on blue"
+                prefix = "> "
+            else:
+                style = "dim gray" if is_broken else "white"
+                prefix = "  "
+
+            line = Text()
+            line.append(prefix, style="bold blink" if (is_current and not is_selected) else "")
+            line.append(protocol_char, style=protocol_style if not is_selected else "bold white on blue")
+            line.append(" ")
+            line.append(name, style=style)
+
+            # Alignment
+            # Panel is centered or full width? _get_manual_panel is used in body
+            # body width is full console width
+            panel_width = self.console.width - 4
+            current_len = cell_len(prefix) + cell_len(protocol_char) + 1 + cell_len(name)
+            padding_len = panel_width - current_len - cell_len(ping_str) - 2
+            if padding_len > 0:
+                line.append(" " * padding_len)
+
+            line.append(ping_str, style=ping_style if not is_selected else "bold white on blue")
+
+            content.append(line)
+            content.append("\n")
+
+        if end_idx < total:
+            content.append("  ↓ ... more profiles below\n", style="dim")
+
+        return Panel(content, title="Manual Selection", border_style="cyan")
 
     def register_hotkey(self, key: str, callback):
         self.hotkeys[key] = callback
@@ -490,6 +617,9 @@ class UI:
                     # F1 sequences
                     if any(f1 in data for f1 in ['\x1bOP', '\x1b[11~', '\x1b[[A', '\x1bO1P', '\x1b[P']):
                         self._handle_hotkey("F1")
+                    # F2 sequences
+                    elif any(f2 in data for f2 in ['\x1bOQ', '\x1b[12~', '\x1b[[B', '\x1bO1Q', '\x1b[Q']):
+                        self._handle_hotkey("F2")
                     # F5 sequences
                     elif any(f5 in data for f5 in ['\x1b[15~', '\x1bOT', '\x1b[15;2~', '\x1b[15;5~']):
                         self._handle_hotkey("F5")
@@ -499,7 +629,32 @@ class UI:
                     # F7 sequences
                     elif any(f7 in data for f7 in ['\x1b[18~', '\x1bOV', '\x1b[18;2~', '\x1b[18;5~']):
                         self._handle_hotkey("F7")
-                    # Enter key (manual refresh)
+                    # Navigation and selection
+                    elif self.show_manual:
+                        if any(up in data for up in ['\x1b[A', 'k']): # Up or 'k'
+                            with self.lock:
+                                self.selected_profile_index = max(0, self.selected_profile_index - 1)
+                            self.update_render()
+                        elif any(down in data for down in ['\x1b[B', 'j']): # Down or 'j'
+                            with self.lock:
+                                self.selected_profile_index = min(len(self.test_results) - 1, self.selected_profile_index + 1)
+                            self.update_render()
+                        elif '\n' in data or '\r' in data:
+                            # Selection confirmed
+                            profile = None
+                            callback = None
+                            with self.lock:
+                                if 0 <= self.selected_profile_index < len(self.test_results):
+                                    profile = self.test_results[self.selected_profile_index]
+                                    callback = self.manual_callback
+                                self.show_manual = False
+
+                            if callback and profile:
+                                threading.Thread(target=callback, args=(profile,), daemon=True).start()
+
+                            if self.live:
+                                self.update_render()
+                    # Enter key (manual refresh if not in manual mode)
                     elif '\n' in data or '\r' in data:
                         if self.live:
                             self.update_render()

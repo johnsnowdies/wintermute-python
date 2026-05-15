@@ -713,6 +713,40 @@ class Wintermute:
         except Exception as e:
             self.logger.error(f"Failed to reload profiles: {e}")
 
+    def manual_profile_selection(self):
+        """Open manual profile selection dialog"""
+        self.ui.toggle_manual(callback=self.switch_to_specific_profile)
+
+    def switch_to_specific_profile(self, profile):
+        """Switch to a specific profile manually"""
+        self.logger.info(f"Manually switching to profile: {profile.comment or profile.host}")
+
+        # Stop everything
+        if self.healthchecker:
+            self.healthchecker.stop()
+            self.healthchecker = None
+
+        if self.singbox_manager:
+            self.singbox_manager.stop()
+            self.singbox_manager = None
+
+        if self.xray_manager:
+            self.xray_manager.stop()
+            self.xray_manager = None
+
+        # Update selected profile
+        self.profile_manager.selected_profile = profile
+        self.ui.set_profile(profile.comment or profile.host)
+
+        # Start new one
+        if self.setup_singbox(profile):
+            self.ui.set_mode("WORKING")
+            self.ui.add_app_log(f"[green]Switched to:[/green] {profile.comment or profile.host}")
+            self.start_healthcheck()
+        else:
+            self.ui.set_mode("ERROR")
+            self.ui.add_app_log(f"[red]Failed to switch to:[/red] {profile.comment or profile.host}")
+
     def switch_profile(self):
         """Force switch to the next best profile and mark current as broken"""
         self.logger.info("Manual profile switch requested (F6)")
@@ -810,6 +844,7 @@ class Wintermute:
         self.ui.set_mode("TESTING")
 
         # Register hotkeys
+        self.ui.register_hotkey("F2", self.manual_profile_selection)
         self.ui.register_hotkey("F5", self.force_reload_profiles)
         self.ui.register_hotkey("F6", self.switch_profile)
         self.ui.register_hotkey("F7", self.retest)
