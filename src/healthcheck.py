@@ -27,6 +27,8 @@ class HealthChecker:
         on_failure_callback: Optional[Callable] = None,
         external_fault_callback: Optional[Callable[[], bool]] = None,
         initial_delay: int = 10,
+        content_url: str = "",
+        content_md5: str = "",
     ):
         """
         Args:
@@ -37,6 +39,8 @@ class HealthChecker:
             on_failure_callback: callback function
             external_fault_callback: external fault signal callback
             initial_delay: delay before first attempt
+            content_url: URL for content check
+            content_md5: Expected MD5 hash for content
         """
         self.check_urls = check_urls
         self.check_interval = check_interval
@@ -45,6 +49,8 @@ class HealthChecker:
         self.on_failure_callback = on_failure_callback
         self.external_fault_callback = external_fault_callback
         self.initial_delay = initial_delay
+        self.content_url = content_url
+        self.content_md5 = content_md5
 
         self._running = False
         self._thread: Optional[threading.Thread] = None
@@ -93,6 +99,8 @@ class HealthChecker:
         """Main Loop"""
         if self._first_check and self.initial_delay > 0:
             self.logger.info(f"{self.initial_delay}s before first check...")
+            from ui import get_ui
+            get_ui().set_health("WAITING", "yellow")
             time.sleep(self.initial_delay)
             self._first_check = False
 
@@ -103,51 +111,71 @@ class HealthChecker:
                     self._failure_count = 0
                     self._failure_window_start = now
 
-                connection_ok = self._check_connection()
-                external_fault = False
-                if self.external_fault_callback:
-                    try:
-                        external_fault = self.external_fault_callback()
-                    except Exception as e:
-                        self.logger.error(f"External fault callback error: {e}")
+                from ui import get_ui
+                ui = get_ui()
 
-                is_ok = connection_ok and not external_fault
-                self._last_check_time = time.time()
+                old_mode = ui.mode
+                ui.set_mode("HEALTHCHECK")
 
-                if is_ok:
-                    if not self._last_status:
-                        self.logger.info("Tunnel recovered")
-                        self._last_status = True
-                    self._failure_count = 0
-                else:
-                    if self._last_status:
-                        self._failure_count += 1
-                        reasons = []
-                        if not connection_ok:
-                            reasons.append("healthcheck")
-                        if external_fault:
-                            reasons.append("sing-box ERROR burst")
-                        reasons_text = ", ".join(reasons) if reasons else "unknown"
-                        self.logger.warn(
-                            f"Detected fault ({self._failure_count} in current minute / allowed {self.failure_threshold}) [{reasons_text}]"
-                        )
+                try:
+                    connection_ok = self._check_connection()
+                    external_fault = False
+                    if self.external_fault_callback:
+                        try:
+                            external_fault = self.external_fault_callback()
+                        except Exception as e:
+                            self.logger.error(f"External fault callback error: {e}")
 
-                        if self._failure_count > self.failure_threshold:
-                            self.logger.error(
-                                f"Tunnel failed after {self._failure_count} failures in the last minute!"
-                            )
-                            self._last_status = False
+                    is_ok = connection_ok and not external_fault
+                    self._last_check_time = time.time()
 
-                            if self.on_failure_callback:
-                                try:
-                                    self.on_failure_callback()
-                                    self._failure_count = 0
-                                except Exception as e:
-                                    self.logger.error(f"Callback error: {e}")
+                    if is_ok:
+                        if not self._last_status:
+                            self.logger.info("Tunnel recovered")
+                            self._last_status = True
+                        self._failure_count = 0
+                        ui.set_health("OK", "green")
+                        ui.set_mode("WORKING")
                     else:
-                        self._failure_count = min(
-                            self._failure_count, self.failure_threshold
-                        )
+                        if self._last_status:
+                            self._failure_count += 1
+                            reasons = []
+                            if not connection_ok:
+                                reasons.append("healthcheck")
+                            if external_fault:
+                                reasons.append("sing-box ERROR burst")
+                            reasons_text = ", ".join(reasons) if reasons else "unknown"
+                            self.logger.warn(
+                                f"Detected fault ({self._failure_count} in current minute / allowed {self.failure_threshold}) [{reasons_text}]"
+                            )
+
+                            if self._failure_count <= self.failure_threshold:
+                                ui.set_health(f"FAIL {self._failure_count}", "yellow")
+                                ui.set_mode("WORKING")
+
+                            if self._failure_count > self.failure_threshold:
+                                ui.set_health("RECOVERING", "red")
+                                self.logger.error(
+                                    f"Tunnel failed after {self._failure_count} failures in the last minute!"
+                                )
+                                self._last_status = False
+
+                                if self.on_failure_callback:
+                                    try:
+                                        # Callback usually sets mode to TESTING/WORKING
+                                        self.on_failure_callback()
+                                        self._failure_count = 0
+                                    except Exception as e:
+                                        self.logger.error(f"Callback error: {e}")
+                        else:
+                            ui.set_health("RECOVERING", "red")
+                            self._failure_count = min(
+                                self._failure_count, self.failure_threshold
+                            )
+                finally:
+                    # If we didn't transition to TESTING (via callback) or stayed in HEALTHCHECK
+                    if ui.mode == "HEALTHCHECK":
+                        ui.set_mode(old_mode if old_mode != "HEALTHCHECK" else "WORKING")
 
             except Exception as e:
                 self.logger.error(f"HealthChecker general error: {e}")
@@ -163,12 +191,16 @@ class HealthChecker:
         The check is performed directly (without a proxy), because in TUN mode
         all traffic already automatically goes through the tunnel.
         """
-        from wintermute import Wintermute
-
-        client = Wintermute(test_mode=True)
-        test_url = client.config.testing.healthcheck_content_url
-        expected_md5 = client.config.testing.healthcheck_content_md5
-        del client
+        if not self.content_url or not self.content_md5:
+            # Fallback to simple URL checks if no content check is configured
+            for url in self.check_urls:
+                try:
+                    response = requests.get(url, timeout=self.timeout, verify=False)
+                    if response.status_code in [200, 204]:
+                        return True
+                except:
+                    continue
+            return False
 
         for url in self.check_urls:
             try:
@@ -178,7 +210,7 @@ class HealthChecker:
                 if response.status_code in [200, 204]:
                     # Second check
                     response = requests.get(
-                        test_url,
+                        self.content_url,
                         timeout=self.timeout,
                         verify=False,
                     )
@@ -191,7 +223,7 @@ class HealthChecker:
                         ).hexdigest()
 
                         # check hashes
-                        if content_md5 == expected_md5:
+                        if content_md5 == self.content_md5:
                             return True
 
             except requests.exceptions.Timeout:

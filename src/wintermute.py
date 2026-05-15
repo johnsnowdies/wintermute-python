@@ -52,6 +52,9 @@ class Wintermute:
         # Flags
         self._running = True
 
+        self.ui = get_ui()
+        self.ui.set_mode("TESTING")
+
         # Sing-Box config path
         self.singbox_config_path = (
             Path.home() / ".config" / "sing-box" / "wintermute_config.json"
@@ -59,8 +62,6 @@ class Wintermute:
 
         # iptables rules
         self._iptables_rules: List[str] = []
-
-        self.ui = get_ui()
 
         # register cleanup on SIGTERM
         if not test_mode:
@@ -550,6 +551,8 @@ class Wintermute:
             on_failure_callback=self.on_tunnel_failure,
             external_fault_callback=self._has_error_burst,
             initial_delay=self.config.testing.initial_delay,
+            content_url=self.config.testing.healthcheck_content_url,
+            content_md5=self.config.testing.healthcheck_content_md5,
         )
         self.healthchecker.start()
 
@@ -564,6 +567,7 @@ class Wintermute:
     def on_tunnel_failure(self):
         """Called on tunnel failure detected, autorecovery"""
         self.logger.warning("TUNNEL FAILURE DETECTED, RECOVERING...")
+        self.ui.set_mode("TESTING")
 
         # Stoping engines
         if self.singbox_manager:
@@ -586,16 +590,19 @@ class Wintermute:
 
             # Pick backup profile
             self.profile_manager.selected_profile = backup
+            self.ui.set_profile(backup.comment or backup.host)
 
             # Setup and start Sing-Box
             if self.setup_singbox():
                 self.logger.warning("RESOLVED")
+                self.ui.set_mode("WORKING")
                 return
 
         # There is no suitable backups, load all profiles (cache-fallback)
         self.logger.warning("NO SUCCESS WITH BACKUP PROFILES, TESTING PROFILES")
         if self.load_and_select_profile():
-            self.setup_singbox()
+            if self.setup_singbox():
+                self.ui.set_mode("WORKING")
 
     def start_profile_refresh(self):
         """Background process of profile auto-refresh"""
@@ -616,6 +623,7 @@ class Wintermute:
         """Application entry point"""
 
         self.ui.start()
+        self.ui.set_mode("TESTING")
 
         setup_logger(
             name=__name__,
@@ -643,8 +651,12 @@ class Wintermute:
         # Load and select profile
         while self._running:
             if self.load_and_select_profile():
+                selected = self.profile_manager.get_selected_profile()
+                if selected:
+                    self.ui.set_profile(selected.comment or selected.host)
                 # Setup and start Sing-Box
                 if self.setup_singbox():
+                    self.ui.set_mode("WORKING")
                     break
 
             self.logger.warning("No working profiles found. Retrying in 30 seconds...")
