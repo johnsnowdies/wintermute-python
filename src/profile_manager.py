@@ -390,6 +390,7 @@ class ProfileTester:
                 test_url,
                 timeout=timeout,
                 verify=True,
+                headers={"User-Agent": "Mozilla/5.0"},
                 proxies=dict(
                     http=f"socks5h://127.0.0.1:{proxy_port}",
                     https=f"socks5h://127.0.0.1:{proxy_port}",
