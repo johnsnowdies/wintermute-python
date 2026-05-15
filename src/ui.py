@@ -107,6 +107,7 @@ class UI:
         self.input_value = ""
         self.input_cursor = 0
         self.input_event = threading.Event()
+        self.healthcheck_enabled = True
 
     def _clean_text(self, text: str) -> str:
         if not text:
@@ -128,6 +129,18 @@ class UI:
         for log in logs[-20:]: # Show last 20 lines
             content.append(Text.from_markup(log) + "\n")
         return Panel(content, title=title, border_style="blue")
+
+    def _get_clipboard(self):
+        """Try to get clipboard content (works for WSL/Linux if tools installed)"""
+        try:
+            import subprocess
+            # Try powershell.exe for WSL
+            res = subprocess.run(["powershell.exe", "-Command", "Get-Clipboard"], capture_output=True, text=True, timeout=2)
+            if res.returncode == 0:
+                return res.stdout.strip()
+        except Exception:
+            pass
+        return ""
 
     def _get_footer(self):
         if self.mode == "WORKING":
@@ -159,6 +172,10 @@ class UI:
         footer_content.append(profile_text)
 
         padding_right = console_width - cell_len(footer_content.plain) - cell_len(health_str)
+        if not self.healthcheck_enabled:
+            health_text = Text(" HEALTHCHECK: OFF ", style="bold black on orange1")
+            padding_right = console_width - cell_len(footer_content.plain) - cell_len(" HEALTHCHECK: OFF ")
+
         if padding_right > 0:
             footer_content.append(" " * padding_right)
         footer_content.append(health_text)
@@ -206,7 +223,11 @@ class UI:
         # 2.5) Mode
         if self.mode == "WORKING":
             content.append("Mode: ", style="bold cyan")
-            content.append(f"{self.core_type}\n\n")
+            content.append(f"{self.core_type}\n")
+            if not self.healthcheck_enabled:
+                content.append("Healthcheck: ", style="bold cyan")
+                content.append("OFF\n", style="bold orange1")
+            content.append("\n")
 
         # 3) Last Update
         if self.last_update:
@@ -482,7 +503,9 @@ class UI:
         header.append("[F7]", style="bold cyan")
         header.append(" Retest  ", style="white")
         header.append("[F8]", style="bold cyan")
-        header.append(" USB", style="white")
+        header.append(" USB  ", style="white")
+        header.append("[F9]", style="bold cyan")
+        header.append(" Health", style="white")
         return header
 
     def _get_help_panel(self):
@@ -503,7 +526,9 @@ class UI:
         help_text.append(" [F7] ", style="bold cyan")
         help_text.append("- Clear broken profiles and start full re-test\n")
         help_text.append(" [F8] ", style="bold cyan")
-        help_text.append("- Load profiles from USB drive (profile_*.json)\n\n")
+        help_text.append("- Load profiles from USB drive (profile_*.json)\n")
+        help_text.append(" [F9] ", style="bold cyan")
+        help_text.append("- Toggle Healthcheck (enable/disable auto-switching)\n\n")
         help_text.append(" [Arrows] ", style="bold cyan")
         help_text.append("- Navigate in manual selection mode\n")
         help_text.append(" [Enter] ", style="bold cyan")
@@ -1000,10 +1025,19 @@ class UI:
                                 if self.input_cursor > 0:
                                     self.input_value = self.input_value[:self.input_cursor-1] + self.input_value[self.input_cursor:]
                                     self.input_cursor -= 1
-                        elif len(data) == 1 and ord(data) >= 32: # Printable char
-                            with self.lock:
-                                self.input_value = self.input_value[:self.input_cursor] + data + self.input_value[self.input_cursor:]
-                                self.input_cursor += 1
+                        elif '\x16' in data: # Ctrl+V
+                            clipboard = self._get_clipboard()
+                            if clipboard:
+                                with self.lock:
+                                    self.input_value = self.input_value[:self.input_cursor] + clipboard + self.input_value[self.input_cursor:]
+                                    self.input_cursor += len(clipboard)
+                        elif len(data) >= 1 and ord(data[0]) >= 32: # Printable string/char
+                            # Filter out escape sequences if any slipped through
+                            clean_data = "".join([c for c in data if ord(c) >= 32])
+                            if clean_data:
+                                with self.lock:
+                                    self.input_value = self.input_value[:self.input_cursor] + clean_data + self.input_value[self.input_cursor:]
+                                    self.input_cursor += len(clean_data)
                         self.update_render()
                         continue
 
@@ -1031,6 +1065,9 @@ class UI:
                     # F8 sequences
                     elif any(f8 in data for f8 in ['\x1b[19~', '\x1bOW', '\x1b[19;2~', '\x1b[19;5~']):
                         self._handle_hotkey("F8")
+                    # F9 sequences
+                    elif any(f9 in data for f9 in ['\x1b[20~', '\x1b[20;2~', '\x1b[20;5~']):
+                        self._handle_hotkey("F9")
                     # Navigation and selection
                     elif self.show_manual:
                         if any(up in data for up in ['\x1b[A', 'k']): # Up or 'k'

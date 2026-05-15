@@ -718,6 +718,25 @@ class Wintermute:
         """Open manual profile selection dialog"""
         self.ui.toggle_manual(callback=self.switch_to_specific_profile)
 
+    def toggle_healthcheck(self):
+        """Toggle healthcheck on/off"""
+        enabled = not self.ui.healthcheck_enabled
+        self.ui.healthcheck_enabled = enabled
+
+        if enabled:
+            self.logger.info("Healthcheck ENABLED")
+            self.ui.add_app_log("[green]Healthcheck ENABLED[/green]")
+            if self.healthchecker:
+                self.healthchecker.start()
+            else:
+                self.start_healthcheck()
+        else:
+            self.logger.info("Healthcheck DISABLED")
+            self.ui.add_app_log("[orange1]Healthcheck DISABLED[/orange1]")
+            if self.healthchecker:
+                self.healthchecker.stop()
+            self.ui.set_health("OFF", "dim")
+
     def switch_to_specific_profile(self, profile):
         """Switch to a specific profile manually"""
         self.logger.info(f"Manually switching to profile: {profile.comment or profile.host}")
@@ -996,6 +1015,7 @@ class Wintermute:
         self.ui.register_hotkey("F6", self.switch_profile)
         self.ui.register_hotkey("F7", self.retest)
         self.ui.register_hotkey("F8", self.load_from_usb)
+        self.ui.register_hotkey("F9", self.toggle_healthcheck)
 
         setup_logger(
             level=self.config.logging.level,
