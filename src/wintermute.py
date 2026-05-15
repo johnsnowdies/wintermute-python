@@ -645,7 +645,8 @@ class Wintermute:
         )
 
         for backup in backup_profiles:
-            self.logger.info(f"Trying backup profile: {backup.comment}")
+            protocol_char = "X" if backup.extra.get("type") == "xhttp" else "S"
+            self.logger.info(f"Trying backup profile: {protocol_char} {backup.comment or backup.host}")
             self.logger.info(
                 f"   {backup.protocol.upper()} {backup.host}:{backup.port} [{backup.latency}ms]"
             )

@@ -545,7 +545,8 @@ class ProfileTester:
             results.append(res)
             completed += 1
             if res:
-                logger.info(f"   [{completed}/{total_to_test}] Profile {res.comment or res.host} ({res.host}) OK ({res.latency}ms)")
+                protocol_char = "X" if res.extra.get("type") == "xhttp" else "S"
+                logger.info(f"   [{completed}/{total_to_test}] {protocol_char} Profile {res.comment or res.host} ({res.host}) OK ({res.latency}ms)")
             else:
                 logger.debug(f"   [{completed}/{total_to_test}] Profile test failed")
 

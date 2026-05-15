@@ -239,10 +239,12 @@ class UI:
                     ping_style = "red"
 
                 prefix = "> " if is_current else "  "
+                protocol_char = "X" if p.extra.get("type") == "xhttp" else "S"
+                protocol_style = "bold green" if protocol_char == "X" else "bold orange1"
 
                 # Calculate space for name
-                # available = status_width - cell_len(prefix) - cell_len(ping_str) - 1 (min space)
-                max_name_len = status_width - cell_len(prefix) - cell_len(ping_str) - 1
+                # available = status_width - cell_len(prefix) - 2 (prot + space) - cell_len(ping_str) - 1 (min space)
+                max_name_len = status_width - cell_len(prefix) - 2 - cell_len(ping_str) - 1
                 if cell_len(name) > max_name_len:
                     # Text.truncate uses cell length
                     t_name = Text(name)
@@ -250,12 +252,14 @@ class UI:
                     name = t_name.plain + "..."
 
                 # Padding to right-align ping
-                padding_len = status_width - cell_len(prefix) - cell_len(name) - cell_len(ping_str)
+                padding_len = status_width - cell_len(prefix) - 2 - cell_len(name) - cell_len(ping_str)
                 if padding_len < 1: padding_len = 1
                 padding = " " * padding_len
 
                 line = Text()
                 line.append(prefix, style="bold blink" if is_current else "")
+                line.append(protocol_char, style=protocol_style)
+                line.append(" ")
                 line.append(name, style="bold white" if is_current else "")
                 line.append(padding)
                 line.append(ping_str, style=ping_style)
