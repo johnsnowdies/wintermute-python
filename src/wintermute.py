@@ -254,14 +254,34 @@ class Wintermute:
                 "sniffing": {"enabled": True, "destOverride": ["http", "tls"]}
             })
         else:
-            # TUN for Xray (requires fakedns often, but let's keep it simple)
+            # TUN for Xray
             inbounds.append({
-                "protocol": "dokodemo-door",
-                "port": 0,
+                "protocol": "tun",
                 "tag": "tun-in",
-                "settings": {"network": "tcp,udp", "followRedirect": True},
-                "sniffing": {"enabled": True, "destOverride": ["http", "tls"]}
+                "settings": {
+                    "name": network_config.tun_name,
+                    "mtu": network_config.mtu,
+                    "address": [network_config.tun_subnet.split('/')[0]],
+                    "autoSystemRoutingTable": True,
+                    "autoOutboundsInterface": network_config.interface
+                },
+                "sniffing": {
+                    "enabled": True,
+                    "destOverride": ["http", "tls", "quic"],
+                    "metadataOnly": False
+                }
             })
+
+        # DNS configuration for TUN mode
+        dns_config = {}
+        if not proxy_mode:
+            dns_config = {
+                "servers": [
+                    "https://1.1.1.1/dns-query",
+                    "localhost"
+                ],
+                "queryStrategy": "UseIP"
+            }
 
         # Outbound translation
         xray_outbound = {
@@ -337,7 +357,7 @@ class Wintermute:
                         "fingerprint": tls.get("utls", {}).get("fingerprint", "chrome")
                     }
 
-        return {
+        config = {
             "log": {"loglevel": "error"},
             "inbounds": inbounds,
             "outbounds": [
@@ -353,6 +373,11 @@ class Wintermute:
                 ]
             }
         }
+
+        if dns_config:
+            config["dns"] = dns_config
+
+        return config
 
     def _save_config(
         self,

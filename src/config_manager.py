@@ -142,12 +142,17 @@ class ConfigManager:
 
         # Network
         net = data.get("network", {})
+        tun = net.get("tun", {})
+        if not tun and "tun_name" not in net:
+             # try old structure if tun is not a dict
+             tun = {}
+
         network = NetworkConfig(
             interface=net.get("interface", "eth0"),
             exclude_subnets=net.get("exclude_subnets", []),
-            tun_name=net.get("tun", {}).get("name", "wintermute-tun"),
-            tun_subnet=net.get("tun", {}).get("subnet", "172.19.0.0/30"),
-            mtu=net.get("tun", {}).get("mtu", 1500),
+            tun_name=tun.get("name") or net.get("tun_name") or "wintermute-tun",
+            tun_subnet=tun.get("subnet") or net.get("tun_subnet") or "172.19.0.0/30",
+            mtu=tun.get("mtu") or net.get("mtu") or 1500,
             ipv4_forward=net.get("ipv4_forward", False),
         )
 
