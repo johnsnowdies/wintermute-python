@@ -974,6 +974,14 @@ class Wintermute:
             self.logger.error(f"Error handling source action {action}: {e}")
             self.ui.add_app_log(f"[red]Error saving config: {e}[/red]")
 
+    def handle_config_save(self):
+        try:
+            self.config_manager.save()
+            self.ui.add_app_log("[green]Configuration saved successfully[/green]")
+        except Exception as e:
+            self.logger.error(f"Error saving config: {e}")
+            self.ui.add_app_log(f"[red]Error saving config: {e}[/red]")
+
     def run(self):
         """Application entry point"""
 
@@ -983,6 +991,7 @@ class Wintermute:
         # Register hotkeys
         self.ui.register_hotkey("F2", self.manual_profile_selection)
         self.ui.register_hotkey("F3", lambda: self.ui.toggle_sources(self.handle_source_action))
+        self.ui.register_hotkey("F4", lambda: self.ui.toggle_config_edit(self.handle_config_save))
         self.ui.register_hotkey("F5", self.force_reload_profiles)
         self.ui.register_hotkey("F6", self.switch_profile)
         self.ui.register_hotkey("F7", self.retest)

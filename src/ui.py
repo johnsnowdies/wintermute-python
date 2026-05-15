@@ -4,7 +4,7 @@ import re
 from datetime import datetime
 from typing import Optional
 
-from config_manager import ConfigManager
+from config_manager import ConfigManager, parse_time_interval
 from rich.console import Console, Group
 from rich.layout import Layout
 from rich.live import Live
@@ -95,6 +95,11 @@ class UI:
         self.edit_source_field_index = 0
         self.edit_source_obj = None # Temporary SourceConfig-like dict
         self.source_callback = None # callback(action, index, data)
+
+        # Config Management
+        self.show_config_edit = False
+        self.selected_config_field_index = 0
+        self.config_callback = None # callback() for saving
 
     def _clean_text(self, text: str) -> str:
         if not text:
@@ -318,6 +323,8 @@ class UI:
                 self.layout["body"].update(self._get_sources_list_panel())
             elif self.show_source_edit:
                 self.layout["body"].update(self._get_source_edit_panel())
+            elif self.show_config_edit:
+                self.layout["body"].update(self._get_config_edit_panel())
             else:
                 self.layout["body"].update(self.main_layout)
                 self.main_layout["left"]["app"].update(self._get_panel(self.app_logs, "Application Logs"))
@@ -457,6 +464,8 @@ class UI:
         header.append(" Manual  ", style="white")
         header.append("[F3]", style="bold cyan")
         header.append(" Sources  ", style="white")
+        header.append("[F4]", style="bold cyan")
+        header.append(" Config  ", style="white")
         header.append("[F5]", style="bold cyan")
         header.append(" Reload  ", style="white")
         header.append("[F6]", style="bold cyan")
@@ -476,6 +485,8 @@ class UI:
         help_text.append("- Manual profile selection\n")
         help_text.append(" [F3] ", style="bold cyan")
         help_text.append("- Manage profile sources\n")
+        help_text.append(" [F4] ", style="bold cyan")
+        help_text.append("- Edit application configuration\n")
         help_text.append(" [F5] ", style="bold cyan")
         help_text.append("- Reload profiles from sources (URLs)\n")
         help_text.append(" [F6] ", style="bold cyan")
@@ -653,6 +664,102 @@ class UI:
                 self.show_source_edit = False
                 self.show_sources_list = True
                 self.edit_source_obj = None
+        if self.live:
+            self.update_render()
+
+    def _get_config_edit_panel(self):
+        fields = self._get_config_fields()
+        content = Text()
+
+        # Scroll logic
+        panel_height = self.console.height - 10
+        if panel_height < 5: panel_height = 5
+
+        total = len(fields)
+        start_idx = max(0, self.selected_config_field_index - panel_height // 2)
+        end_idx = min(total, start_idx + panel_height)
+        if end_idx - start_idx < panel_height:
+            start_idx = max(0, end_idx - panel_height)
+
+        if start_idx > 0:
+            content.append("  ↑ ... more settings above\n", style="dim")
+
+        for i in range(start_idx, end_idx):
+            f = fields[i]
+            is_selected = (i == self.selected_config_field_index)
+            style = "bold white on blue" if is_selected else "white"
+
+            line = Text()
+            line.append(f" {f['label']:30}: ", style="bold cyan")
+
+            val_display = str(f['val'])
+            if f['type'] == bool:
+                val_display = "Yes" if f['val'] else "No"
+
+            line.append(f" {val_display} ", style=style)
+            content.append(line)
+            content.append("\n")
+
+        if end_idx < total:
+            content.append("  ↓ ... more settings below\n", style="dim")
+
+        footer = Text("\n [Enter] Change Value  [s] Save & Close  [Esc] Cancel", justify="center", style="bold cyan")
+
+        return Panel(
+            Group(content, footer),
+            title="Application Configuration",
+            border_style="bold green",
+            padding=(1, 2)
+        )
+
+    def _get_config_fields(self):
+        c = self.config
+
+        def to_interval(sec):
+            if sec % 3600 == 0: return f"{sec // 3600}h"
+            if sec % 60 == 0: return f"{sec // 60}m"
+            return f"{sec}s"
+
+        return [
+            {"label": "Cache: Enabled", "val": c.cache.enabled, "type": bool, "obj": c.cache, "attr": "enabled"},
+            {"label": "Cache: Directory", "val": c.cache.directory, "type": str, "obj": c.cache, "attr": "directory"},
+            {"label": "Cache: Fallback on Error", "val": c.cache.fallback_on_error, "type": bool, "obj": c.cache, "attr": "fallback_on_error"},
+
+            {"label": "Network: Interface", "val": c.network.interface, "type": str, "obj": c.network, "attr": "interface"},
+            {"label": "Network: Exclude Subnets", "val": ", ".join(c.network.exclude_subnets), "type": list, "obj": c.network, "attr": "exclude_subnets"},
+            {"label": "Network: TUN Name", "val": c.network.tun_name, "type": str, "obj": c.network, "attr": "tun_name"},
+            {"label": "Network: TUN Subnet", "val": c.network.tun_subnet, "type": str, "obj": c.network, "attr": "tun_subnet"},
+            {"label": "Network: MTU", "val": c.network.mtu, "type": int, "obj": c.network, "attr": "mtu"},
+            {"label": "Network: IPv4 Forward", "val": c.network.ipv4_forward, "type": bool, "obj": c.network, "attr": "ipv4_forward"},
+
+            {"label": "Testing: Healthcheck URLs", "val": ", ".join(c.testing.healthcheck_urls), "type": list, "obj": c.testing, "attr": "healthcheck_urls"},
+            {"label": "Testing: Content URL", "val": c.testing.healthcheck_content_url or "", "type": str, "obj": c.testing, "attr": "healthcheck_content_url"},
+            {"label": "Testing: Content MD5", "val": c.testing.healthcheck_content_md5 or "", "type": str, "obj": c.testing, "attr": "healthcheck_content_md5"},
+            {"label": "Testing: Timeout", "val": c.testing.timeout, "type": int, "obj": c.testing, "attr": "timeout"},
+            {"label": "Testing: Health Interval", "val": to_interval(c.testing.healthcheck_interval), "type": "interval", "obj": c.testing, "attr": "healthcheck_interval"},
+            {"label": "Testing: Failure Threshold", "val": c.testing.failure_threshold, "type": int, "obj": c.testing, "attr": "failure_threshold"},
+            {"label": "Testing: Initial Delay", "val": to_interval(c.testing.initial_delay), "type": "interval", "obj": c.testing, "attr": "initial_delay"},
+            {"label": "Testing: Max Test", "val": c.testing.max_test, "type": int, "obj": c.testing, "attr": "max_test"},
+
+            {"label": "Selection: Strategy", "val": c.selection.strategy, "type": str, "obj": c.selection, "attr": "strategy"},
+            {"label": "Selection: Min Latency", "val": c.selection.min_acceptable_latency, "type": int, "obj": c.selection, "attr": "min_acceptable_latency"},
+            {"label": "Selection: Auto Switch", "val": c.selection.auto_switch, "type": bool, "obj": c.selection, "attr": "auto_switch"},
+            {"label": "Selection: Switch Delay", "val": to_interval(c.selection.switch_delay), "type": "interval", "obj": c.selection, "attr": "switch_delay"},
+            {"label": "Selection: Backup Count", "val": c.selection.backup_profiles_count, "type": int, "obj": c.selection, "attr": "backup_profiles_count"},
+            {"label": "Selection: Prefer Xray", "val": c.selection.prefer_xray, "type": bool, "obj": c.selection, "attr": "prefer_xray"},
+        ]
+
+    def toggle_config_edit(self, callback=None):
+        with self.lock:
+            self.show_config_edit = not self.show_config_edit
+            if self.show_config_edit:
+                self.show_help = False
+                self.show_manual = False
+                self.show_message_modal = False
+                self.show_sources_list = False
+                self.show_source_edit = False
+                self.config_callback = callback
+                self.selected_config_field_index = 0
         if self.live:
             self.update_render()
 
@@ -838,6 +945,9 @@ class UI:
                     # F3 sequences
                     elif any(f3 in data for f3 in ['\x1bOR', '\x1b[13~', '\x1b[[C', '\x1bO1R', '\x1b[R']):
                         self._handle_hotkey("F3")
+                    # F4 sequences
+                    elif any(f4 in data for f4 in ['\x1bOS', '\x1b[14~', '\x1b[[D', '\x1bO1S', '\x1b[S']):
+                        self._handle_hotkey("F4")
                     # F5 sequences
                     elif any(f5 in data for f5 in ['\x1b[15~', '\x1bOT', '\x1b[15;2~', '\x1b[15;5~']):
                         self._handle_hotkey("F5")
@@ -882,6 +992,49 @@ class UI:
                                 self.show_message_modal = False
                             if self.live:
                                 self.update_render()
+                    # Config Edit navigation
+                    elif self.show_config_edit:
+                        fields = self._get_config_fields()
+                        if any(up in data for up in ['\x1b[A', 'k']):
+                            with self.lock:
+                                self.selected_config_field_index = max(0, self.selected_config_field_index - 1)
+                            self.update_render()
+                        elif any(down in data for down in ['\x1b[B', 'j']):
+                            with self.lock:
+                                self.selected_config_field_index = min(len(fields) - 1, self.selected_config_field_index + 1)
+                            self.update_render()
+                        elif '\x1b' in data and len(data) == 1: # Escape
+                            self.toggle_config_edit()
+                        elif 's' in data:
+                            callback = self.config_callback
+                            if callback:
+                                threading.Thread(target=callback, daemon=True).start()
+                            self.toggle_config_edit()
+                        elif '\n' in data or '\r' in data:
+                            # Change value
+                            field = fields[self.selected_config_field_index]
+                            obj = field['obj']
+                            attr = field['attr']
+                            ftype = field['type']
+
+                            if ftype == bool:
+                                setattr(obj, attr, not getattr(obj, attr))
+                            else:
+                                current_val = str(field['val'])
+                                new_val = self._get_input_modal(field['label'], current_val)
+                                try:
+                                    if ftype == int:
+                                        setattr(obj, attr, int(new_val))
+                                    elif ftype == list:
+                                        setattr(obj, attr, [s.strip() for s in new_val.split(",") if s.strip()])
+                                    elif ftype == "interval":
+                                        setattr(obj, attr, parse_time_interval(new_val))
+                                    else:
+                                        setattr(obj, attr, new_val)
+                                except Exception as e:
+                                    logging.error(f"Error setting config field: {e}")
+                                    self.show_message("Error", str(e))
+                            self.update_render()
                     # Sources List navigation
                     elif self.show_sources_list:
                         if any(up in data for up in ['\x1b[A', 'k']):

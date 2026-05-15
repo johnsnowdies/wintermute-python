@@ -208,8 +208,11 @@ class ConfigManager:
             return
 
         # Read existing file to preserve structure where possible (best effort with PyYAML)
-        with open(self.config_path, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f)
+        try:
+            with open(self.config_path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+        except Exception:
+            data = {}
 
         # Update sources
         data["sources"] = []
@@ -218,23 +221,66 @@ class ConfigManager:
                 "url": src.url,
                 "enabled": src.enabled
             }
-            # Only add optional fields if they are not default or were present
             if src.type != "base64": src_dict["type"] = src.type
-            if src.refresh != 3600:
-                # convert back to string if possible, or just seconds
-                if src.refresh % 3600 == 0:
-                    src_dict["refresh"] = f"{src.refresh // 3600}h"
-                elif src.refresh % 60 == 0:
-                    src_dict["refresh"] = f"{src.refresh // 60}m"
-                else:
-                    src_dict["refresh"] = f"{src.refresh}s"
-            else:
-                src_dict["refresh"] = "1h"
 
+            # Helper to convert seconds back to interval string
+            def to_interval(sec):
+                if sec % 3600 == 0: return f"{sec // 3600}h"
+                if sec % 60 == 0: return f"{sec // 60}m"
+                return f"{sec}s"
+
+            src_dict["refresh"] = to_interval(src.refresh)
             if src.filter: src_dict["filter"] = src.filter
             if src.priority != 1: src_dict["priority"] = src.priority
-
             data["sources"].append(src_dict)
+
+        # Update cache
+        data["cache"] = {
+            "enabled": self.config.cache.enabled,
+            "directory": self.config.cache.directory,
+            "fallback_on_error": self.config.cache.fallback_on_error
+        }
+
+        # Update network
+        data["network"] = {
+            "interface": self.config.network.interface,
+            "exclude_subnets": self.config.network.exclude_subnets,
+            "tun": {
+                "name": self.config.network.tun_name,
+                "subnet": self.config.network.tun_subnet,
+                "mtu": self.config.network.mtu
+            },
+            "ipv4_forward": self.config.network.ipv4_forward
+        }
+
+        # Update testing
+        def to_interval(sec):
+            if sec % 3600 == 0: return f"{sec // 3600}h"
+            if sec % 60 == 0: return f"{sec // 60}m"
+            return f"{sec}s"
+
+        data["testing"] = {
+            "healthcheck_urls": self.config.testing.healthcheck_urls,
+            "timeout": self.config.testing.timeout,
+            "healthcheck_interval": to_interval(self.config.testing.healthcheck_interval),
+            "failure_threshold": self.config.testing.failure_threshold,
+            "initial_delay": to_interval(self.config.testing.initial_delay),
+            "max_test": self.config.testing.max_test
+        }
+        if self.config.testing.healthcheck_content_url:
+            data["testing"]["healthcheck_content_url"] = self.config.testing.healthcheck_content_url
+        if self.config.testing.healthcheck_content_md5:
+            data["testing"]["healthcheck_content_md5"] = self.config.testing.healthcheck_content_md5
+
+        # Update selection
+        data["selection"] = {
+            "strategy": self.config.selection.strategy,
+            "min_acceptable_latency": self.config.selection.min_acceptable_latency,
+            "auto_switch": self.config.selection.auto_switch,
+            "switch_delay": to_interval(self.config.selection.switch_delay),
+            "backup_profiles_count": self.config.selection.backup_profiles_count,
+            "prefer_xray": self.config.selection.prefer_xray
+        }
 
         with open(self.config_path, "w", encoding="utf-8") as f:
             yaml.dump(data, f, sort_keys=False, allow_unicode=True, default_flow_style=False)
