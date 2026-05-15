@@ -6,7 +6,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Callable
 from urllib.parse import parse_qs, unquote
 
 import requests
@@ -102,6 +102,13 @@ class ProfileCache:
 
     def get_age(self, url: str) -> Optional[int]:
         """Returns the age of the cache in seconds"""
+        ts = self.get_timestamp(url)
+        if ts is None:
+            return None
+        return int(time.time() - ts)
+
+    def get_timestamp(self, url: str) -> Optional[float]:
+        """Returns the timestamp of the cache"""
         try:
             cache_path = self._get_cache_path(url)
             if not cache_path.exists():
@@ -110,9 +117,9 @@ class ProfileCache:
             with open(cache_path, "r", encoding="utf-8") as f:
                 cache_data = json.load(f)
 
-            return int(time.time() - cache_data.get("timestamp", 0))
+            return cache_data.get("timestamp")
         except Exception as e:
-            self.logger.warning(f"get_age general error: {e}")
+            self.logger.warning(f"get_timestamp general error: {e}")
             return None
 
 
@@ -579,7 +586,7 @@ class ProfileManager:
         self._refresh_thread: Optional[threading.Thread] = None
         self._running = False
         self._sources = []
-        self._refresh_callback: Optional[callable] = None
+        self._refresh_callback: Optional[Callable] = None
         self.config = config
         setup_logger(__name__)
         self.logger = get_logger(__name__)
@@ -674,6 +681,12 @@ class ProfileManager:
         if self._refresh_thread:
             self._refresh_thread.join(timeout=5)
         self.logger.debug("Auto update stopped")
+
+    def get_last_update_time(self, url: str) -> Optional[float]:
+        """Returns last update timestamp for URL"""
+        if self._loader.cache:
+            return self._loader.cache.get_timestamp(url)
+        return None
 
     def test_and_select_best(
         self,

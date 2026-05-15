@@ -1,4 +1,5 @@
 import threading
+import re
 from datetime import datetime
 from typing import Optional
 
@@ -43,6 +44,22 @@ class UI:
         self.health_status = "OK"
         self.health_color = "green"
 
+        self.start_time = datetime.now()
+        self.sources = []
+        self.last_update = None
+        self.test_results = []
+        self.core_type = "None"
+
+    def _clean_name(self, name: str) -> str:
+        if not name:
+            return ""
+        # Remove characters that are likely emojis or "junk"
+        # Keep word characters (including unicode), spaces, and basic punctuation
+        cleaned = re.sub(r'[^\w\s\.,\-_\[\]\(\)\+\/\!\?]', '', name)
+        # Also handle multiple spaces that might result from removal
+        cleaned = re.sub(r'\s+', ' ', cleaned)
+        return cleaned.strip()
+
     def _get_panel(self, logs, title):
         content = Text()
         for log in logs[-20:]: # Show last 20 lines
@@ -85,12 +102,100 @@ class UI:
 
         return footer_content
 
+    def _get_status_panel(self):
+        content = Text()
+
+        status_width = int(self.console.width * 0.3) - 4
+        if status_width < 20: status_width = 20
+
+        # 1) Uptime
+        uptime = datetime.now() - self.start_time
+        uptime_str = str(uptime).split('.')[0]
+        content.append("Uptime: ", style="bold yellow")
+        content.append(f"{uptime_str}\n")
+        content.append("Started: ", style="bold yellow")
+        content.append(f"{self.start_time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+
+        # 2) Sources
+        if self.sources:
+            content.append("Sources:\n", style="bold cyan")
+            for src in self.sources:
+                content.append(f" {src}\n", style="dim")
+            content.append("\n")
+
+        # 2.5) Mode
+        if self.mode == "WORKING":
+            content.append("Mode: ", style="bold cyan")
+            content.append(f"{self.core_type}\n\n")
+
+        # 3) Last Update
+        if self.last_update:
+            content.append("Updated: ", style="bold cyan")
+            lu_dt = datetime.fromtimestamp(self.last_update)
+            content.append(f"{lu_dt.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+
+        # 4) Test Results
+        if self.test_results:
+            content.append("Test Results:\n", style="bold magenta")
+            # Show top 10 results
+            for p in self.test_results[:10]:
+                name = self._clean_name(p.comment or p.host)
+                is_current = name == self.profile_name
+
+                ping = p.latency
+                if ping is None:
+                    ping_str = "TIMEOUT"
+                    ping_style = "red"
+                elif ping < 200:
+                    ping_str = f"{ping}ms"
+                    ping_style = "green"
+                elif ping < 500:
+                    ping_str = f"{ping}ms"
+                    ping_style = "yellow"
+                else:
+                    ping_str = f"{ping}ms"
+                    ping_style = "red"
+
+                prefix = "> " if is_current else "  "
+
+                # Calculate space for name
+                # available = status_width - len(prefix) - len(ping_str) - 1 (min space)
+                max_name_len = status_width - len(prefix) - len(ping_str) - 1
+                if len(name) > max_name_len:
+                    name = name[:max_name_len-3] + "..."
+
+                # Padding to right-align ping
+                padding_len = status_width - len(prefix) - len(name) - len(ping_str)
+                if padding_len < 1: padding_len = 1
+                padding = " " * padding_len
+
+                line = Text()
+                line.append(prefix, style="bold blink" if is_current else "")
+                line.append(name, style="bold white" if is_current else "")
+                line.append(padding)
+                line.append(ping_str, style=ping_style)
+                content.append(line)
+                content.append("\n")
+
+        return Panel(content, title="Status", border_style="green")
+
     def update_render(self):
         with self.lock:
             self.layout["app"].update(self._get_panel(self.app_logs, "Application Logs"))
             self.layout["core"].update(self._get_panel(self.core_logs, "Core (Sing-box/Xray) Logs"))
-            self.layout["status"].update(Panel("", title="Status", border_style="green"))
+            self.layout["status"].update(self._get_status_panel())
             self.layout["footer"].update(self._get_footer())
+
+    def set_status_data(self, sources=None, last_update=None, test_results=None):
+        with self.lock:
+            if sources is not None:
+                self.sources = sources
+            if last_update is not None:
+                self.last_update = last_update
+            if test_results is not None:
+                self.test_results = test_results
+        if self.live:
+            self.update_render()
 
     def set_mode(self, mode: str):
         with self.lock:
@@ -100,7 +205,7 @@ class UI:
 
     def set_profile(self, name: str):
         with self.lock:
-            self.profile_name = name
+            self.profile_name = self._clean_name(name)
         if self.live:
             self.update_render()
 
@@ -108,6 +213,12 @@ class UI:
         with self.lock:
             self.health_status = status
             self.health_color = color
+        if self.live:
+            self.update_render()
+
+    def set_core_type(self, core_type: str):
+        with self.lock:
+            self.core_type = core_type
         if self.live:
             self.update_render()
 

@@ -437,6 +437,21 @@ class Wintermute:
         count = self.profile_manager.load_profiles_from_sources(
             self.config.sources, use_cache_fallback=self.config.cache.fallback_on_error
         )
+
+        # Update UI sources and last update
+        sources_urls = [s.url for s in self.config.sources if s.enabled]
+        last_update = 0
+        for s in self.config.sources:
+            if s.enabled:
+                ts = self.profile_manager.get_last_update_time(s.url)
+                if ts and ts > last_update:
+                    last_update = ts
+
+        self.ui.set_status_data(
+            sources=sources_urls,
+            last_update=last_update if last_update > 0 else None
+        )
+
         if count == 0:
             self.logger.error("0 profiles loaded, interrupting")
             return False
@@ -452,6 +467,9 @@ class Wintermute:
             else False,
             prefer_xray=self.config.selection.prefer_xray,
         )
+
+        # Update UI with test results
+        self.ui.set_status_data(test_results=self.profile_manager.working_profiles)
 
         if not best_profile:
             self.logger.error("No working profile found")
@@ -473,6 +491,7 @@ class Wintermute:
 
         # Decide which engine to use
         use_xray = profile.extra.get("type") == "xhttp"
+        self.ui.set_core_type("xray" if use_xray else "sing-box")
 
         # Creating configuration
         outbound = self._create_singbox_outbound(profile)
@@ -616,7 +635,22 @@ class Wintermute:
         self.profile_manager.start_auto_refresh(
             sources=self.config.sources,
             refresh_interval=min_refresh,
-            on_refresh_callback=None,  # Пока без callback
+            on_refresh_callback=self._on_profiles_refreshed,
+        )
+
+    def _on_profiles_refreshed(self):
+        """Called when profiles are updated from sources"""
+        sources_urls = [s.url for s in self.config.sources if s.enabled]
+        last_update = 0
+        for s in self.config.sources:
+            if s.enabled:
+                ts = self.profile_manager.get_last_update_time(s.url)
+                if ts and ts > last_update:
+                    last_update = ts
+
+        self.ui.set_status_data(
+            sources=sources_urls,
+            last_update=last_update if last_update > 0 else None
         )
 
     def run(self):
