@@ -510,6 +510,20 @@ class UI:
 
     def _get_help_panel(self):
         help_text = Text()
+
+        art = """
+░██       ░██ ░██              ░██                                                      ░██
+░██       ░██                  ░██                                                      ░██
+░██  ░██  ░██ ░██░████████  ░████████  ░███████  ░██░████ ░█████████████  ░██    ░██ ░████████  ░███████
+░██ ░████ ░██ ░██░██    ░██    ░██    ░██    ░██ ░███     ░██   ░██   ░██ ░██    ░██    ░██    ░██    ░██
+░██░██ ░██░██ ░██░██    ░██    ░██    ░█████████ ░██      ░██   ░██   ░██ ░██    ░██    ░██    ░█████████
+░████   ░████ ░██░██    ░██    ░██    ░██        ░██      ░██   ░██   ░██ ░██   ░███    ░██    ░██
+░███     ░███ ░██░██    ░██     ░████  ░███████  ░██      ░██   ░██   ░██  ░█████░██     ░████  ░███████
+
+
+
+"""
+        help_text.append(art, style="bold yellow")
         help_text.append("\n Wintermute Hotkeys\n\n", style="bold yellow")
         help_text.append(" [F1] ", style="bold cyan")
         help_text.append("- Toggle this help screen\n")
@@ -535,7 +549,7 @@ class UI:
         help_text.append("- Select profile or refresh UI\n\n")
         help_text.append(" [Ctrl+C] ", style="bold red")
         help_text.append("- Terminate application\n\n")
-        help_text.append(" More features coming soon...", style="italic dim")
+        help_text.append(" made by eslider, hire me pls: contact@eslider.me", style="italic dim")
 
         return Panel(help_text, title="Help", border_style="cyan")
 
