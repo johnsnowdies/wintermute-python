@@ -14,6 +14,15 @@ from rich.progress import ProgressBar
 from rich.logging import RichHandler
 from rich.cells import cell_len
 import logging
+import sys
+import os
+try:
+    import termios
+    import tty
+    import select
+    HAS_TERMIOS = True
+except ImportError:
+    HAS_TERMIOS = False
 
 class UI:
     def __init__(self, config_path: str = "config.yaml",):
@@ -34,17 +43,22 @@ class UI:
 
     def _setup_layout(self):
         self.layout.split(
-            Layout(name="main", ratio=1),
+            Layout(name="header", size=1),
+            Layout(name="body", ratio=1),
             Layout(name="footer", size=1),
         )
-        self.layout["main"].split_row(
+
+        self.main_layout = Layout()
+        self.main_layout.split_row(
             Layout(name="left", ratio=7),
             Layout(name="status", ratio=3),
         )
-        self.layout["left"].split(
+        self.main_layout["left"].split(
             Layout(name="app", ratio=1),
             Layout(name="core", ratio=1),
         )
+
+        self.layout["body"].update(self.main_layout)
 
         self.mode = "TESTING"
         self.profile_name = "None"
@@ -58,6 +72,8 @@ class UI:
         self.core_type = "None"
         self.progress_current = 0
         self.progress_total = 0
+        self.show_help = False
+        self.hotkeys = {}
 
     def _clean_text(self, text: str) -> str:
         if not text:
@@ -254,10 +270,16 @@ class UI:
 
     def update_render(self):
         with self.lock:
-            self.layout["app"].update(self._get_panel(self.app_logs, "Application Logs"))
-            self.layout["core"].update(self._get_panel(self.core_logs, "Core (Sing-box/Xray) Logs"))
-            self.layout["status"].update(self._get_status_panel())
+            self.layout["header"].update(self._get_header())
             self.layout["footer"].update(self._get_footer())
+
+            if self.show_help:
+                self.layout["body"].update(self._get_help_panel())
+            else:
+                self.layout["body"].update(self.main_layout)
+                self.main_layout["left"]["app"].update(self._get_panel(self.app_logs, "Application Logs"))
+                self.main_layout["left"]["core"].update(self._get_panel(self.core_logs, "Core (Sing-box/Xray) Logs"))
+                self.main_layout["status"].update(self._get_status_panel())
 
     def set_status_data(self, sources=None, last_update=None, test_results=None):
         with self.lock:
@@ -378,6 +400,89 @@ class UI:
         if self.live:
             self.update_render()
 
+    def _get_header(self):
+        header = Text()
+        header.append(" [F1]", style="bold cyan")
+        header.append(" Help  ", style="white")
+        header.append("[F5]", style="bold cyan")
+        header.append(" Reload", style="white")
+        return header
+
+    def _get_help_panel(self):
+        help_text = Text()
+        help_text.append("\n Wintermute Hotkeys\n\n", style="bold yellow")
+        help_text.append(" [F1] ", style="bold cyan")
+        help_text.append("- Toggle this help screen\n")
+        help_text.append(" [F5] ", style="bold cyan")
+        help_text.append("- Reload profiles from sources (URLs)\n\n")
+        help_text.append(" [Ctrl+C] ", style="bold red")
+        help_text.append("- Terminate application\n\n")
+        help_text.append(" More features coming soon...", style="italic dim")
+
+        return Panel(help_text, title="Help", border_style="cyan")
+
+    def toggle_help(self):
+        with self.lock:
+            self.show_help = not self.show_help
+        if self.live:
+            self.update_render()
+
+    def register_hotkey(self, key: str, callback):
+        self.hotkeys[key] = callback
+
+    def _handle_hotkey(self, key: str):
+        if key == "F1":
+            self.toggle_help()
+        elif key in self.hotkeys:
+            callback = self.hotkeys[key]
+            if callback:
+                # Run callback in a separate thread to not block input loop
+                threading.Thread(target=callback, daemon=True).start()
+
+    def _input_task(self):
+        if not HAS_TERMIOS:
+            return
+
+        fd = sys.stdin.fileno()
+        try:
+            old_settings = termios.tcgetattr(fd)
+        except Exception:
+            return # Not a TTY
+
+        try:
+            tty.setcbreak(fd)
+            while not self._stop_event.is_set():
+                if select.select([fd], [], [], 0.1)[0]:
+                    try:
+                        # Read all available bytes
+                        data = os.read(fd, 1024).decode('utf-8', errors='ignore')
+                    except Exception:
+                        continue
+
+                    if not data:
+                        continue
+
+                    # F1 sequences
+                    if any(f1 in data for f1 in ['\x1bOP', '\x1b[11~', '\x1b[[A', '\x1bO1P', '\x1b[P']):
+                        self._handle_hotkey("F1")
+                    # F5 sequences
+                    elif any(f5 in data for f5 in ['\x1b[15~', '\x1bOT', '\x1b[15;2~', '\x1b[15;5~']):
+                        self._handle_hotkey("F5")
+                    # Enter key (manual refresh)
+                    elif '\n' in data or '\r' in data:
+                        if self.live:
+                            self.update_render()
+                    # Debug: uncomment to see raw sequences in log
+                    # elif data.startswith('\x1b'):
+                    #     self.add_app_log(f"DEBUG: Unknown seq: {repr(data)}")
+        except Exception:
+            pass
+        finally:
+            try:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+            except Exception:
+                pass
+
     def _refresh_task(self):
         """Background task to refresh UI (for uptime counter)"""
         while not self._stop_event.is_set():
@@ -398,12 +503,21 @@ class UI:
         self._refresh_thread = threading.Thread(target=self._refresh_task, daemon=True)
         self._refresh_thread.start()
 
+        # Start input thread
+        self._input_thread = threading.Thread(target=self._input_task, daemon=True)
+        self._input_thread.start()
+
     def stop(self):
         if hasattr(self, "_stop_event"):
             self._stop_event.set()
         if hasattr(self, "_refresh_thread"):
             try:
                 self._refresh_thread.join(timeout=1)
+            except Exception:
+                pass
+        if hasattr(self, "_input_thread"):
+            try:
+                self._input_thread.join(timeout=1)
             except Exception:
                 pass
 

@@ -698,11 +698,26 @@ class Wintermute:
             last_update=last_update if last_update > 0 else None
         )
 
+    def force_reload_profiles(self):
+        """Force reload profiles from sources without restarting engine or testing"""
+        self.logger.info("Force reloading profiles from sources...")
+        try:
+            count = self.profile_manager.load_profiles_from_sources(
+                self.config.sources, use_cache_fallback=self.config.cache.fallback_on_error
+            )
+            self._on_profiles_refreshed()
+            self.logger.info(f"Reloaded {count} profiles.")
+        except Exception as e:
+            self.logger.error(f"Failed to reload profiles: {e}")
+
     def run(self):
         """Application entry point"""
 
         self.ui.start()
         self.ui.set_mode("TESTING")
+
+        # Register hotkeys
+        self.ui.register_hotkey("F5", self.force_reload_profiles)
 
         setup_logger(
             level=self.config.logging.level,
