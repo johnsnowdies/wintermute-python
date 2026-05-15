@@ -381,7 +381,10 @@ class Wintermute:
                     }
 
         config = {
-            "log": {"loglevel": "error"},
+            "log": {
+                "access": "none",
+                "loglevel": "warning"
+            },
             "inbounds": inbounds,
             "outbounds": [
                 xray_outbound,
