@@ -4,7 +4,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Deque, Optional
+from typing import Deque, Optional, Any
 
 from logger import get_logger, setup_logger
 
@@ -12,11 +12,12 @@ from logger import get_logger, setup_logger
 class SingboxManager:
     """Sing-Box process manager class"""
 
-    def __init__(self, singbox_path: str, config_path: Path):
-        setup_logger(__name__)
+    def __init__(self, singbox_path: str, config_path: Path, ui: Optional[Any] = None):
+        setup_logger(__name__, ui=ui)
         self.logger = get_logger(__name__)
         self.singbox_path = singbox_path
         self.config_path = config_path
+        self.ui = ui
         self.process: Optional[subprocess.Popen] = None
         self._running = False
         self._log_thread: Optional[threading.Thread] = None
@@ -47,8 +48,11 @@ class SingboxManager:
             for line in iter(self.process.stdout.readline, ""):
                 if not line:
                     break
-                print(f"[sing-box] {line.rstrip()}")
-                sys.stdout.flush()
+                if self.ui:
+                    self.ui.add_core_log(f"[sing-box] {line.rstrip()}")
+                else:
+                    print(f"[sing-box] {line.rstrip()}")
+                    sys.stdout.flush()
                 if "ERROR" in line.upper():
                     self._register_error_event()
         except Exception as e:

@@ -21,6 +21,7 @@ from profile_manager import Profile, ProfileManager
 from singbox_manager import SingboxManager
 from xray_manager import XrayManager
 from utils import find_singbox, find_xray
+from ui import get_ui
 
 
 class Wintermute:
@@ -58,6 +59,8 @@ class Wintermute:
 
         # iptables rules
         self._iptables_rules: List[str] = []
+
+        self.ui = get_ui()
 
         # register cleanup on SIGTERM
         if not test_mode:
@@ -487,7 +490,7 @@ class Wintermute:
                 self.logger.error("No xray found at your system.")
                 return False
 
-            self.xray_manager = XrayManager(xray_path, config_path)
+            self.xray_manager = XrayManager(xray_path, config_path, ui=self.ui)
             if not self.xray_manager.start():
                 return False
 
@@ -519,7 +522,7 @@ class Wintermute:
                 )
                 return False
 
-            self.singbox_manager = SingboxManager(singbox_path, config_path)
+            self.singbox_manager = SingboxManager(singbox_path, config_path, ui=self.ui)
             if not self.singbox_manager.start():
                 return False
 
@@ -612,11 +615,14 @@ class Wintermute:
     def run(self):
         """Application entry point"""
 
+        self.ui.start()
+
         setup_logger(
             name=__name__,
             level=self.config.logging.level,
             log_format=self.config.logging.format,
             log_file=self.config.logging.file,
+            ui=self.ui,
         )
 
         self.logger = get_logger(__name__)
@@ -662,6 +668,9 @@ class Wintermute:
     def cleanup(self):
         """Cleanup of resources"""
         self._running = False
+
+        if self.ui:
+            self.ui.stop()
 
         if self.healthchecker:
             self.healthchecker.stop()

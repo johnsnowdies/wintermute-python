@@ -1,6 +1,6 @@
 import logging
 import sys
-from typing import Optional
+from typing import Optional, Any
 
 
 def setup_logger(
@@ -8,6 +8,7 @@ def setup_logger(
     level: str = "debug",
     log_format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     log_file: Optional[str] = None,
+    ui: Optional[Any] = None,
 ) -> logging.Logger:
     """
     Setup logger with given configuration
@@ -41,7 +42,10 @@ def setup_logger(
     formatter = logging.Formatter(log_format)
 
     # Setup handler (file or stdout)
-    if log_file:
+    if ui:
+        from ui import UILogHandler
+        handler = UILogHandler(ui)
+    elif log_file:
         handler = logging.FileHandler(log_file, encoding="utf-8")
     else:
         handler = logging.StreamHandler(sys.stdout)
