@@ -86,6 +86,9 @@ class SelectionConfig:
     switch_delay: int = 10  # sec
     backup_profiles_count: int = 3
     prefer_xray: bool = False
+    max_test_profiles: int = 100
+    test_timeout: int = 5
+    test_real_connection: bool = False
 
 
 @dataclass
@@ -181,6 +184,9 @@ class ConfigManager:
             switch_delay=parse_time_interval(sel.get("switch_delay", "10s")),
             backup_profiles_count=sel.get("backup_profiles_count", 3),
             prefer_xray=sel.get("prefer_xray", False),
+            max_test_profiles=sel.get("max_test_profiles", 100),
+            test_timeout=sel.get("test_timeout", 5),
+            test_real_connection=sel.get("test_real_connection", False),
         )
 
         # Cache config
@@ -279,7 +285,10 @@ class ConfigManager:
             "auto_switch": self.config.selection.auto_switch,
             "switch_delay": to_interval(self.config.selection.switch_delay),
             "backup_profiles_count": self.config.selection.backup_profiles_count,
-            "prefer_xray": self.config.selection.prefer_xray
+            "prefer_xray": self.config.selection.prefer_xray,
+            "max_test_profiles": self.config.selection.max_test_profiles,
+            "test_timeout": self.config.selection.test_timeout,
+            "test_real_connection": self.config.selection.test_real_connection
         }
 
         with open(self.config_path, "w", encoding="utf-8") as f:
