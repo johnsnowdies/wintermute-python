@@ -8,11 +8,26 @@ from logger import get_logger
 def get_default_gateway() -> Optional[str]:
     """Returns current default gateway IP"""
     try:
+        # Better way to get default gateway: ask which route is used for a common internet IP
+        result = subprocess.run(
+            ["ip", "route", "get", "8.8.8.8"], capture_output=True, text=True
+        )
+        if result.returncode == 0 and result.stdout:
+            parts = result.stdout.split()
+            if "via" in parts:
+                return parts[parts.index("via") + 1]
+    except Exception:
+        pass
+
+    # Fallback to old method
+    try:
         result = subprocess.run(
             ["ip", "route", "show", "default"], capture_output=True, text=True
         )
         if result.returncode == 0 and result.stdout:
-            parts = result.stdout.split()
+            # Take the first line in case of multiple defaults
+            first_line = result.stdout.splitlines()[0]
+            parts = first_line.split()
             if "via" in parts:
                 return parts[parts.index("via") + 1]
     except Exception:
@@ -48,29 +63,54 @@ def setup_linux_tun_routing(
     subprocess.run(["ip", "link", "set", "dev", tun_interface, "up"], check=False)
 
     # 2. Add route to proxy server via original gateway
-    gw = get_default_gateway()
     proxy_ip = resolve_hostname(proxy_host) or proxy_host
 
-    # if gw and proxy_ip:
-    #     rule = f"ip route add {proxy_ip} via {gw} dev {interface}"
-    #     logger.info(f"   Adding bypass route for proxy: {rule}")
-    #     subprocess.run(rule.split(), check=False)
-    #     rules.append(rule)
+    # Auto-detect best gateway and interface for proxy
+    actual_gw = None
+    actual_iface = interface
+
+    try:
+        route_get = subprocess.run(
+            ["ip", "route", "get", proxy_ip], capture_output=True, text=True
+        )
+        if route_get.returncode == 0:
+            parts = route_get.stdout.split()
+            if "via" in parts:
+                actual_gw = parts[parts.index("via") + 1]
+            if "dev" in parts:
+                actual_iface = parts[parts.index("dev") + 1]
+    except Exception as e:
+        logger.error(f"Failed to auto-detect route for proxy: {e}")
+
+    gw = actual_gw or get_default_gateway()
+
+    if gw and proxy_ip:
+        # Use auto-detected interface if available, otherwise fallback to provided one
+        target_iface = actual_iface or interface
+        rule = f"ip route add {proxy_ip} via {gw} dev {target_iface}"
+        logger.info(f"   Adding bypass route for proxy: {rule}")
+        subprocess.run(rule.split(), check=False)
+        rules.append(rule)
+    else:
+        logger.error(f"Could not determine gateway ({gw}) or proxy IP ({proxy_ip})!")
+        logger.error("Bypass route NOT added. This will likely break connection.")
 
     # 3. Add routes for excluded subnets via original gateway
-    # if gw:
-    #     for subnet in exclude_subnets:
-    #         rule = f"ip route add {subnet} via {gw} dev {interface}"
-    #         subprocess.run(rule.split(), check=False)
-    #         rules.append(rule)
+    if gw:
+        for subnet in exclude_subnets:
+            # We use the same gateway/interface as for proxy or original
+            target_iface = actual_iface or interface
+            rule = f"ip route add {subnet} via {gw} dev {target_iface}"
+            subprocess.run(rule.split(), check=False)
+            rules.append(rule)
 
     # 4. Add default routes via TUN (two-halves approach)
-    # rule1 = f"ip route add 0.0.0.0/1 dev {tun_interface}"
-    # rule2 = f"ip route add 128.0.0.0/1 dev {tun_interface}"
-    # subprocess.run(rule1.split(), check=False)
-    # subprocess.run(rule2.split(), check=False)
-    # rules.append(rule1)
-    # rules.append(rule2)
+    rule1 = f"ip route add 0.0.0.0/1 dev {tun_interface}"
+    rule2 = f"ip route add 128.0.0.0/1 dev {tun_interface}"
+    subprocess.run(rule1.split(), check=False)
+    subprocess.run(rule2.split(), check=False)
+    rules.append(rule1)
+    rules.append(rule2)
 
     logger.info("Manual TUN routing applied")
     return rules
