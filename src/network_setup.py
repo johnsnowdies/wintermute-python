@@ -51,11 +51,11 @@ def setup_linux_tun_routing(
     gw = get_default_gateway()
     proxy_ip = resolve_hostname(proxy_host) or proxy_host
 
-    if gw and proxy_ip:
-        rule = f"ip route add {proxy_ip} via {gw} dev {interface}"
-        logger.info(f"   Adding bypass route for proxy: {rule}")
-        subprocess.run(rule.split(), check=False)
-        rules.append(rule)
+    # if gw and proxy_ip:
+    #     rule = f"ip route add {proxy_ip} via {gw} dev {interface}"
+    #     logger.info(f"   Adding bypass route for proxy: {rule}")
+    #     subprocess.run(rule.split(), check=False)
+    #     rules.append(rule)
 
     # 3. Add routes for excluded subnets via original gateway
     # if gw:
