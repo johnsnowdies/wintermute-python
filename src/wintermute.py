@@ -280,7 +280,7 @@ class Wintermute:
                     "mtu": network_config.mtu,
                     "gateway": [f"{tun_ip}/{network_config.tun_subnet.split('/')[1]}"],
                     "dns": ["1.1.1.1"],
-                    "autoSystemRoutingTable": True,
+                    "autoSystemRoutingTable": False,
                     "autoOutboundsInterface": network_config.wan_interface
                 },
                 "sniffing": {
