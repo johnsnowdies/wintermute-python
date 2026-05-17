@@ -48,7 +48,7 @@ class SourceConfig:
 class NetworkConfig:
     """Network configuration for tunneling"""
 
-    wan_interface: str
+    wan_interface: Optional[str] = "auto"
     lan_interface: Optional[str] = None
     exclude_subnets: List[str] = field(default_factory=list)
     tun_name: str = "wintermute-tun"
@@ -153,10 +153,9 @@ class ConfigManager:
              tun = {}
 
         # Handle migration from 'interface' to 'wan_interface'
-        old_interface = net.get("interface", "eth0")
         wan_interface = net.get("wan_interface")
         if wan_interface is None:
-             wan_interface = old_interface
+             wan_interface = net.get("interface", "auto")
 
         lan_interface = net.get("lan_interface")
 

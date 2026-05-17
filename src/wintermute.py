@@ -15,6 +15,7 @@ from logger import get_logger, setup_logger
 from network_setup import (
     check_interface_exists,
     cleanup_iptables_rules,
+    get_default_interface,
     setup_iptables_rules,
     setup_linux_tun_routing,
 )
@@ -1035,6 +1036,17 @@ class Wintermute:
         if os.geteuid() != 0:
             self.logger.error("Wintermute requires root access")
             return 1
+
+        # Auto-detect WAN interface if needed
+        if not self.config.network.wan_interface or self.config.network.wan_interface == "auto":
+            self.logger.info("Auto-detecting WAN interface...")
+            detected = get_default_interface()
+            if detected:
+                self.logger.info(f"Detected WAN interface: {detected}")
+                self.config.network.wan_interface = detected
+            else:
+                self.logger.error("Failed to auto-detect WAN interface. Please specify it in config.yaml")
+                return 1
 
         # Check interface exist
         if not check_interface_exists(self.config.network.wan_interface):

@@ -35,6 +35,36 @@ def get_default_gateway() -> Optional[str]:
     return None
 
 
+def get_default_interface() -> Optional[str]:
+    """Returns current default WAN interface name"""
+    try:
+        # Ask which interface is used for a common internet IP
+        result = subprocess.run(
+            ["ip", "route", "get", "8.8.8.8"], capture_output=True, text=True
+        )
+        if result.returncode == 0 and result.stdout:
+            parts = result.stdout.split()
+            if "dev" in parts:
+                return parts[parts.index("dev") + 1]
+    except Exception:
+        pass
+
+    # Fallback to old method
+    try:
+        result = subprocess.run(
+            ["ip", "route", "show", "default"], capture_output=True, text=True
+        )
+        if result.returncode == 0 and result.stdout:
+            # Take the first line in case of multiple defaults
+            first_line = result.stdout.splitlines()[0]
+            parts = first_line.split()
+            if "dev" in parts:
+                return parts[parts.index("dev") + 1]
+    except Exception:
+        pass
+    return None
+
+
 def resolve_hostname(hostname: str) -> Optional[str]:
     """Resolves hostname to IP address"""
     try:

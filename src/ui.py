@@ -773,7 +773,7 @@ class UI:
             {"label": "Cache: Directory", "val": c.cache.directory, "type": str, "obj": c.cache, "attr": "directory"},
             {"label": "Cache: Fallback on Error", "val": c.cache.fallback_on_error, "type": bool, "obj": c.cache, "attr": "fallback_on_error"},
 
-            {"label": "Network: WAN Interface", "val": c.network.wan_interface, "type": str, "obj": c.network, "attr": "wan_interface"},
+            {"label": "Network: WAN Interface", "val": c.network.wan_interface or "auto", "type": str, "obj": c.network, "attr": "wan_interface"},
             {"label": "Network: LAN Interface", "val": c.network.lan_interface or "none", "type": str, "obj": c.network, "attr": "lan_interface"},
             {"label": "Network: Exclude Subnets", "val": ", ".join(c.network.exclude_subnets), "type": list, "obj": c.network, "attr": "exclude_subnets"},
             {"label": "Network: TUN Name", "val": c.network.tun_name, "type": str, "obj": c.network, "attr": "tun_name"},
