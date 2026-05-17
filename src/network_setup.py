@@ -58,11 +58,11 @@ def setup_linux_tun_routing(
         rules.append(rule)
 
     # 3. Add routes for excluded subnets via original gateway
-    if gw:
-        for subnet in exclude_subnets:
-            rule = f"ip route add {subnet} via {gw} dev {interface}"
-            subprocess.run(rule.split(), check=False)
-            rules.append(rule)
+    # if gw:
+    #     for subnet in exclude_subnets:
+    #         rule = f"ip route add {subnet} via {gw} dev {interface}"
+    #         subprocess.run(rule.split(), check=False)
+    #         rules.append(rule)
 
     # 4. Add default routes via TUN (two-halves approach)
     rule1 = f"ip route add 0.0.0.0/1 dev {tun_interface}"
