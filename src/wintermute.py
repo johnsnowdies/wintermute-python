@@ -403,7 +403,7 @@ class Wintermute:
                     {"type": "field", "protocol": ["dns"], "outboundTag": "dns-out"},
                     {"type": "field", "ip": ["198.18.0.0/15"], "outboundTag": "proxy"},
                     {"type": "field", "outboundTag": "direct", "ip": ["127.0.0.0/8"] + network_config.exclude_subnets},
-                    {"type": "field", "outboundTag": "proxy", "network": "tcp,udp"}
+                    {"type": "field", "outboundTag": "proxy", "inboundTag": ["tun-in"]}
                 ]
             }
         }
