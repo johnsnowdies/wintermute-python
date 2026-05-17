@@ -177,6 +177,48 @@ def setup_iptables_rules(
     logger.info(f"   LAN Interface: {lan_interface} -> {tun_interface}")
     logger.info(f"   TUN subnet: {tun_subnet}")
 
+    # --- SMART CLEANUP START ---
+    logger.info("Cleaning up old rules before setup...")
+
+    # Clean mangle PREROUTING (MARK)
+    # Get all rules from PREROUTING mangle and delete those matching our criteria
+    mangle_dump = subprocess.run(["iptables", "-t", "mangle", "-S", "PREROUTING"], capture_output=True, text=True)
+    if mangle_dump.returncode == 0:
+        for line in mangle_dump.stdout.splitlines():
+            if f"-i {lan_interface}" in line and "--set-xmark 0x2/0xffffffff" in line: # iptables -S uses -xmark
+                cmd = line.replace("-A", "-D")
+                subprocess.run(f"iptables -t mangle {cmd}".split(), check=False)
+            elif f"-i {lan_interface}" in line and "-j RETURN" in line:
+                cmd = line.replace("-A", "-D")
+                subprocess.run(f"iptables -t mangle {cmd}".split(), check=False)
+
+    # Clean nat POSTROUTING (MASQUERADE)
+    nat_dump = subprocess.run(["iptables", "-t", "nat", "-S", "POSTROUTING"], capture_output=True, text=True)
+    if nat_dump.returncode == 0:
+        for line in nat_dump.stdout.splitlines():
+            if f"-o {tun_interface}" in line and "-j MASQUERADE" in line:
+                cmd = line.replace("-A", "-D")
+                subprocess.run(f"iptables -t nat {cmd}".split(), check=False)
+
+    # Clean filter FORWARD (ACCEPT)
+    forward_dump = subprocess.run(["iptables", "-S", "FORWARD"], capture_output=True, text=True)
+    if forward_dump.returncode == 0:
+        for line in forward_dump.stdout.splitlines():
+            if (f"-i {lan_interface} -o {tun_interface}" in line or f"-i {tun_interface} -o {lan_interface}" in line) and "-j ACCEPT" in line:
+                cmd = line.replace("-A", "-D")
+                subprocess.run(f"iptables {cmd}".split(), check=False)
+
+    # Clean ip rule
+    ip_rule_dump = subprocess.run(["ip", "rule", "show"], capture_output=True, text=True)
+    if ip_rule_dump.returncode == 0:
+        for line in ip_rule_dump.stdout.splitlines():
+            if "fwmark 0x2" in line and "wintermute_routing" in line:
+                subprocess.run(["ip", "rule", "del", "fwmark", "0x2", "table", "wintermute_routing"], check=False)
+
+    # Clean ip route table
+    subprocess.run(["ip", "route", "flush", "table", "wintermute_routing"], check=False)
+    # --- SMART CLEANUP END ---
+
     # Enable forward
     subprocess.run(["sysctl", "-w", "net.ipv4.ip_forward=1"], check=False)
 
@@ -194,15 +236,9 @@ def setup_iptables_rules(
         f"iptables -t mangle -A PREROUTING -i {lan_interface} -d 255.255.255.255 -j RETURN"
     )
 
-    # 2. Mark ALL other traffic from the interface
+    # 2. Mark ALL other traffic from the interface (Universal marking)
     rules.append(
-        f"iptables -t mangle -A PREROUTING -i {lan_interface} -p tcp -j MARK --set-mark 0x2"
-    )
-    rules.append(
-        f"iptables -t mangle -A PREROUTING -i {lan_interface} -p udp -j MARK --set-mark 0x2"
-    )
-    rules.append(
-        f"iptables -t mangle -A PREROUTING -i {lan_interface} -p icmp -j MARK --set-mark 0x2"
+        f"iptables -t mangle -A PREROUTING -i {lan_interface} -j MARK --set-mark 0x2"
     )
 
     # 3. Create a separate routing table for labeled packets
