@@ -117,7 +117,7 @@ def setup_linux_tun_routing(
     if gw and proxy_ip:
         # Use auto-detected interface if available, otherwise fallback to provided one
         target_iface = actual_iface or wan_interface
-        rule = f"ip route add {proxy_ip} via {gw} dev {target_iface}"
+        rule = f"ip route add {proxy_ip} via {gw} dev {target_iface} metric 50"
         logger.info(f"   Adding bypass route for proxy: {rule}")
         subprocess.run(rule.split(), check=False)
         rules.append(rule)
@@ -134,7 +134,9 @@ def setup_linux_tun_routing(
         for subnet in all_exclude:
             # We use the same gateway/interface as for proxy or original
             target_iface = actual_iface or wan_interface
-            rule = f"ip route add {subnet} via {gw} dev {target_iface}"
+            # Use a higher metric (e.g. 200) so that more specific directly connected routes
+            # (which usually have metric 100 or 0) take precedence.
+            rule = f"ip route add {subnet} via {gw} dev {target_iface} metric 200"
             subprocess.run(rule.split(), capture_output=True) # Silently try to add, might fail if exists
             rules.append(rule)
 
