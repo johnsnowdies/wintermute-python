@@ -47,7 +47,7 @@ def setup_linux_tun_routing(
     tun_interface: str,
     tun_addr: str,
     proxy_host: str,
-    interface: str,
+    wan_interface: str,
     exclude_subnets: List[str],
 ) -> List[str]:
     """
@@ -67,7 +67,7 @@ def setup_linux_tun_routing(
 
     # Auto-detect best gateway and interface for proxy
     actual_gw = None
-    actual_iface = interface
+    actual_iface = wan_interface
 
     try:
         route_get = subprocess.run(
@@ -86,7 +86,7 @@ def setup_linux_tun_routing(
 
     if gw and proxy_ip:
         # Use auto-detected interface if available, otherwise fallback to provided one
-        target_iface = actual_iface or interface
+        target_iface = actual_iface or wan_interface
         rule = f"ip route add {proxy_ip} via {gw} dev {target_iface}"
         logger.info(f"   Adding bypass route for proxy: {rule}")
         subprocess.run(rule.split(), check=False)
@@ -99,7 +99,7 @@ def setup_linux_tun_routing(
     if gw:
         for subnet in exclude_subnets:
             # We use the same gateway/interface as for proxy or original
-            target_iface = actual_iface or interface
+            target_iface = actual_iface or wan_interface
             rule = f"ip route add {subnet} via {gw} dev {target_iface}"
             subprocess.run(rule.split(), check=False)
             rules.append(rule)
@@ -117,13 +117,13 @@ def setup_linux_tun_routing(
 
 
 def setup_iptables_rules(
-    interface: str, tun_interface: str, tun_subnet: str, exclude_subnets: List[str]
+    lan_interface: Optional[str], tun_interface: str, tun_subnet: str, exclude_subnets: List[str]
 ) -> List[str]:
     """
     Configures iptables rules for routing traffic from the interface to the TUN tunnel
 
     Args:
-        interface: Incoming interface (e.g. enp0s31f6)
+        lan_interface: Incoming interface (e.g. enp0s31f6), optional
         tun_interface: TUN interface (e.g. wintermute-tun)
         tun_subnet: Subnet of the TUN interface (for example, 172.19.0.0/30)
         exclude_subnets: List of subnets to exclude from routing
@@ -134,8 +134,13 @@ def setup_iptables_rules(
     rules = []
 
     logger = get_logger(__name__)
+
+    if not lan_interface or lan_interface.lower() == "none":
+        logger.warning("No lan_interface provided, skipping iptables rules setup.")
+        return []
+
     logger.info("Setting up iptables rules...")
-    logger.info(f"   Interface: {interface} -> {tun_interface}")
+    logger.info(f"   LAN Interface: {lan_interface} -> {tun_interface}")
     logger.info(f"   TUN subnet: {tun_subnet}")
 
     # Enable forward
@@ -144,26 +149,26 @@ def setup_iptables_rules(
     # 1. EXCLUDE local traffic from labeling
     # Local subnets
     for subnet in exclude_subnets:
-        rule = f"iptables -t mangle -A PREROUTING -i {interface} -d {subnet} -j RETURN"
+        rule = f"iptables -t mangle -A PREROUTING -i {lan_interface} -d {subnet} -j RETURN"
         rules.append(rule)
 
     # Multicast/broadcast
     rules.append(
-        f"iptables -t mangle -A PREROUTING -i {interface} -d 224.0.0.0/4 -j RETURN"
+        f"iptables -t mangle -A PREROUTING -i {lan_interface} -d 224.0.0.0/4 -j RETURN"
     )
     rules.append(
-        f"iptables -t mangle -A PREROUTING -i {interface} -d 255.255.255.255 -j RETURN"
+        f"iptables -t mangle -A PREROUTING -i {lan_interface} -d 255.255.255.255 -j RETURN"
     )
 
     # 2. Mark ALL other traffic from the interface
     rules.append(
-        f"iptables -t mangle -A PREROUTING -i {interface} -p tcp -j MARK --set-mark 0x2"
+        f"iptables -t mangle -A PREROUTING -i {lan_interface} -p tcp -j MARK --set-mark 0x2"
     )
     rules.append(
-        f"iptables -t mangle -A PREROUTING -i {interface} -p udp -j MARK --set-mark 0x2"
+        f"iptables -t mangle -A PREROUTING -i {lan_interface} -p udp -j MARK --set-mark 0x2"
     )
     rules.append(
-        f"iptables -t mangle -A PREROUTING -i {interface} -p icmp -j MARK --set-mark 0x2"
+        f"iptables -t mangle -A PREROUTING -i {lan_interface} -p icmp -j MARK --set-mark 0x2"
     )
 
     # 3. Create a separate routing table for labeled packets
@@ -191,9 +196,9 @@ def setup_iptables_rules(
     rules.append(f"iptables -t nat -A POSTROUTING -o {tun_interface} -j MASQUERADE")
 
     # 7. We allow forwarding between interfaces
-    rules.append(f"iptables -A FORWARD -i {interface} -o {tun_interface} -j ACCEPT")
+    rules.append(f"iptables -A FORWARD -i {lan_interface} -o {tun_interface} -j ACCEPT")
     rules.append(
-        f"iptables -A FORWARD -i {tun_interface} -o {interface} -m state --state RELATED,ESTABLISHED -j ACCEPT"
+        f"iptables -A FORWARD -i {tun_interface} -o {lan_interface} -m state --state RELATED,ESTABLISHED -j ACCEPT"
     )
 
     # Apply all rusel

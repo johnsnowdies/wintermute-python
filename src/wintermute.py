@@ -281,7 +281,7 @@ class Wintermute:
                     "gateway": [f"{tun_ip}/{network_config.tun_subnet.split('/')[1]}"],
                     "dns": ["1.1.1.1"],
                     "autoSystemRoutingTable": True,
-                    "autoOutboundsInterface": network_config.interface
+                    "autoOutboundsInterface": network_config.wan_interface
                 },
                 "sniffing": {
                     "enabled": True,
@@ -561,7 +561,7 @@ class Wintermute:
                     tun_interface=self.config.network.tun_name,
                     tun_addr=f"{tun_ip}/{self.config.network.tun_subnet.split('/')[1]}",
                     proxy_host=profile.host,
-                    interface=self.config.network.interface,
+                    wan_interface=self.config.network.wan_interface,
                     exclude_subnets=self.config.network.exclude_subnets,
                 )
         else:
@@ -596,12 +596,15 @@ class Wintermute:
 
         if self.config.network.ipv4_forward and not proxy_mode:
             # setup iptables
-            self._iptables_rules = setup_iptables_rules(
-                interface=self.config.network.interface,
-                tun_interface=self.config.network.tun_name,
-                tun_subnet=self.config.network.tun_subnet,
-                exclude_subnets=self.config.network.exclude_subnets,
-            )
+            if self.config.network.lan_interface and self.config.network.lan_interface.lower() != "none":
+                self._iptables_rules = setup_iptables_rules(
+                    lan_interface=self.config.network.lan_interface,
+                    tun_interface=self.config.network.tun_name,
+                    tun_subnet=self.config.network.tun_subnet,
+                    exclude_subnets=self.config.network.exclude_subnets,
+                )
+            else:
+                self.logger.warning("ipv4_forward is enabled but lan_interface is not set or 'none'. Skipping NAT setup.")
 
         return True
 
@@ -1033,8 +1036,8 @@ class Wintermute:
             return 1
 
         # Check interface exist
-        if not check_interface_exists(self.config.network.interface):
-            self.logger.error(f"{self.config.network.interface} interface not found")
+        if not check_interface_exists(self.config.network.wan_interface):
+            self.logger.error(f"{self.config.network.wan_interface} interface not found")
             return 1
 
         # Load and select profile

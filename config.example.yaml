@@ -23,14 +23,15 @@ cache:
 
 
 network:
-  interface: "enp0s31f6"
+  # lan_interface: "enp0s31f6"  # Optional: Interface for incoming traffic (LAN), only for NAT
+  wan_interface: "enp0s31f6"  # Required: Main internet interface
   exclude_subnets:
     - "192.168.50.0/24"
-  
+
   tun:
     name: "wintermute-tun"
     subnet: "172.18.0.0/30"
-    mtu: 1500
+    mtu: 1280
 
   ipv4_forward: false
 

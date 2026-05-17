@@ -48,7 +48,8 @@ class SourceConfig:
 class NetworkConfig:
     """Network configuration for tunneling"""
 
-    interface: str
+    wan_interface: str
+    lan_interface: Optional[str] = None
     exclude_subnets: List[str] = field(default_factory=list)
     tun_name: str = "wintermute-tun"
     tun_subnet: str = "172.19.0.0/30"
@@ -151,8 +152,17 @@ class ConfigManager:
              # try old structure if tun is not a dict
              tun = {}
 
+        # Handle migration from 'interface' to 'wan_interface'
+        old_interface = net.get("interface", "eth0")
+        wan_interface = net.get("wan_interface")
+        if wan_interface is None:
+             wan_interface = old_interface
+
+        lan_interface = net.get("lan_interface")
+
         network = NetworkConfig(
-            interface=net.get("interface", "eth0"),
+            lan_interface=lan_interface,
+            wan_interface=wan_interface,
             exclude_subnets=net.get("exclude_subnets", []),
             tun_name=tun.get("name") or net.get("tun_name") or "wintermute-tun",
             tun_subnet=tun.get("subnet") or net.get("tun_subnet") or "172.19.0.0/30",
@@ -248,8 +258,8 @@ class ConfigManager:
         }
 
         # Update network
-        data["network"] = {
-            "interface": self.config.network.interface,
+        net_dict = {
+            "wan_interface": self.config.network.wan_interface,
             "exclude_subnets": self.config.network.exclude_subnets,
             "tun": {
                 "name": self.config.network.tun_name,
@@ -258,6 +268,10 @@ class ConfigManager:
             },
             "ipv4_forward": self.config.network.ipv4_forward
         }
+        if self.config.network.lan_interface:
+            net_dict["lan_interface"] = self.config.network.lan_interface
+
+        data["network"] = net_dict
 
         # Update testing
         def to_interval(sec):
