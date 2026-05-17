@@ -286,7 +286,8 @@ class Wintermute:
                 "sniffing": {
                     "enabled": True,
                     "destOverride": ["http", "tls", "quic", "fakedns"],
-                    "metadataOnly": False
+                    "metadataOnly": False,
+                    "routeOnly": True
                 }
             })
 
@@ -402,7 +403,7 @@ class Wintermute:
                     {"type": "field", "inboundTag": ["tun-in"], "port": 53, "outboundTag": "dns-out"},
                     {"type": "field", "protocol": ["dns"], "outboundTag": "dns-out"},
                     {"type": "field", "ip": ["198.18.0.0/15"], "outboundTag": "proxy"},
-                    {"type": "field", "outboundTag": "direct", "ip": ["127.0.0.0/8"] + network_config.exclude_subnets},
+                    {"type": "field", "outboundTag": "direct", "ip": ["127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"] + network_config.exclude_subnets},
                     {"type": "field", "outboundTag": "proxy", "inboundTag": ["tun-in"]}
                 ]
             }

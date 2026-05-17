@@ -97,11 +97,15 @@ def setup_linux_tun_routing(
 
     # 3. Add routes for excluded subnets via original gateway
     if gw:
-        for subnet in exclude_subnets:
+        # Standard local subnets that should always be bypassed
+        local_subnets = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
+        all_exclude = list(set(local_subnets + exclude_subnets))
+
+        for subnet in all_exclude:
             # We use the same gateway/interface as for proxy or original
             target_iface = actual_iface or wan_interface
             rule = f"ip route add {subnet} via {gw} dev {target_iface}"
-            subprocess.run(rule.split(), check=False)
+            subprocess.run(rule.split(), capture_output=True) # Silently try to add, might fail if exists
             rules.append(rule)
 
     # 4. Add default routes via TUN (two-halves approach)
