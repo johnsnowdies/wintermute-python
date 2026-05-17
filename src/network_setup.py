@@ -65,12 +65,12 @@ def setup_linux_tun_routing(
     #         rules.append(rule)
 
     # 4. Add default routes via TUN (two-halves approach)
-    rule1 = f"ip route add 0.0.0.0/1 dev {tun_interface}"
-    rule2 = f"ip route add 128.0.0.0/1 dev {tun_interface}"
-    subprocess.run(rule1.split(), check=False)
-    subprocess.run(rule2.split(), check=False)
-    rules.append(rule1)
-    rules.append(rule2)
+    # rule1 = f"ip route add 0.0.0.0/1 dev {tun_interface}"
+    # rule2 = f"ip route add 128.0.0.0/1 dev {tun_interface}"
+    # subprocess.run(rule1.split(), check=False)
+    # subprocess.run(rule2.split(), check=False)
+    # rules.append(rule1)
+    # rules.append(rule2)
 
     logger.info("Manual TUN routing applied")
     return rules
