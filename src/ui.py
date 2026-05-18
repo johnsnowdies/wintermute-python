@@ -14,6 +14,7 @@ from rich.align import Align
 from rich.progress import ProgressBar
 from rich.logging import RichHandler
 from rich.cells import cell_len
+from urllib.parse import urlparse
 import logging
 import sys
 import os
@@ -217,7 +218,16 @@ class UI:
         if self.sources:
             content.append("Sources:\n", style="bold cyan")
             for src in self.sources:
-                content.append(f" {src}\n", style="dim")
+                url = str(src)
+                try:
+                    parsed = urlparse(url)
+                    if parsed.netloc:
+                        display_url = f"{parsed.scheme}://{parsed.netloc}..."
+                    else:
+                        display_url = url[:status_width-5] + "..." if len(url) > status_width-5 else url
+                except Exception:
+                    display_url = url[:status_width-5] + "..." if len(url) > status_width-5 else url
+                content.append(f" {display_url}\n", style="dim")
             content.append("\n")
 
         # 2.5) Mode
