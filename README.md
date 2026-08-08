@@ -2,6 +2,11 @@
 
 Automatic proxy tunnel manager supporting sing-box and xray-core. Downloads profiles from remote sources, tests them for latency and content integrity, selects the best one, and monitors the tunnel with automatic failover.
 
+![python-version](https://img.shields.io/badge/python-3.7+-blue.svg)
+[![license](https://img.shields.io/badge/license-MIT-brightgreen.svg)](LICENSE)
+
+![screenshot](tui.png)
+
 ## Features
 
 - **Dual-engine support** — works with sing-box (TUN/mixed proxy mode) and xray-core (TUN/VLESS Reality/xHTTP/gRPC)
