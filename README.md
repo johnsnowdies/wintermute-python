@@ -128,22 +128,6 @@ Or specifying a custom config path:
 sudo .venv/bin/python src/wintermute.py -c /path/to/config.yaml
 ```
 
-### Hotkeys
-
-| Key | Action |
-|-----|--------|
-| F1 | Toggle help |
-| F2 | Manual profile selection |
-| F3 | Manage profile sources |
-| F4 | Edit application configuration |
-| F5 | Reload profiles from sources |
-| F6 | Switch to next best profile (current marked as broken) |
-| F7 | Clear broken profiles and start full re-test |
-| F8 | Load profiles from USB drive |
-| F9 | Toggle healthcheck |
-
-Press Ctrl+C to terminate.
-
 ## How it works
 
 1. **Profile loading** — Wintermute downloads profiles from configured sources
