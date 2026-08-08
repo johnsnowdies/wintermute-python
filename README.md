@@ -1,70 +1,96 @@
-# Wintermute - Автоматический менеджер Sing-box туннелей
+# Wintermute
 
-Wintermute - это автоматический менеджер VPN туннелей на базе sing-box. Он загружает профили из источников, тестирует их, выбирает лучший по пингу, автоматически переключается при падении туннеля и периодически обновляет профили.
+Automatic proxy tunnel manager supporting sing-box and xray-core. Downloads profiles from remote sources, tests them for latency and content integrity, selects the best one, and monitors the tunnel with automatic failover.
 
-## Возможности
+## Features
 
-- **Автоматический выбор профиля** - тестирует профили и выбирает с минимальным пингом
-- **Healthcheck** - постоянно мониторит туннель и автоматически переключается при падении
-- **Автообновление профилей** - периодически загружает свежие профили (настраиваемый интервал)
-- **Кеширование профилей** - сохраняет профили на диск, использует при недоступности источника
-- **Резервные профили** - при падении пробует резервные профили перед полной перезагрузкой
-- **Конфигурация через YAML** - все настройки в одном файле
-- **Поддержка VLESS и Shadowsocks** - парсит оба протокола
-- **TUN режим** - весь трафик системы через туннель
+- **Dual-engine support** — works with sing-box (TUN/mixed proxy mode) and xray-core (TUN/VLESS Reality/xHTTP/gRPC)
+- **Profile sources** — load subscription URLs in base64 or plain text format (VLESS, Shadowsocks)
+- **Smart selection** — tests TCP connectivity and optionally verifies content via MD5; selects the lowest-latency profile
+- **Health monitoring** — periodic HTTP health checks with configurable failure threshold and auto-switch
+- **Auto-refresh** — background profile refresh from sources without interrupting the current tunnel
+- **Caching** — caches profiles to disk with fallback on source unavailability
+- **Backup profiles** — tries backup profiles on failure before full re-test
+- **TUN mode** — routes all system traffic through the tunnel
+- **Proxy mode** — runs as a local SOCKS5 proxy for selective routing
+- **USB loading** — loads profiles from a USB drive (profiles_*.json files)
+- **TUI** — terminal UI with hotkeys, live log panels, profile list, and configuration editor
 
-## 📋 Требования
+## Requirements
 
 - Python 3.7+
-- Sing-box (установка ниже)
-- Права root (для TUN интерфейса)
-- PyYAML (установка ниже)
+- sing-box or xray-core (see installation below)
+- Root privileges (required for TUN interface, routing, and iptables)
 
-## 🚀 Установка
+## Installation
 
-### 1. Установка sing-box
+### 1. Install sing-box
 
 ```bash
 curl -fsSL https://sing-box.app/deb-install.sh | sudo bash
 ```
 
-### 2. Установка зависимостей Python
+Or download from [releases](https://github.com/SagerNet/sing-box/releases).
+
+### 2. Install xray-core
 
 ```bash
-pip install pyyaml requests
+bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
 ```
 
-### 3. Клонирование репозитория
+Or download from [releases](https://github.com/XTLS/Xray-core/releases).
+
+### 3. Install Python dependencies
 
 ```bash
-git clone <your-repo>
+pip install -r requirements.txt
+```
+
+Or using a virtual environment:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+### 4. Clone the repository
+
+```bash
+git clone https://github.com/your-username/wintermute
 cd wintermute
-chmod +x wintermute.py
 ```
 
-## ⚙️ Настройка
+## Configuration
 
-Отредактируйте `config.yaml`:
+Copy the example config and edit it:
+
+```bash
+cp config.example.yaml config.yaml
+```
+
+Key configuration sections:
+
+- **sources** — subscription URLs with refresh intervals and optional filters
+- **network** — WAN interface, TUN interface settings, excluded subnets
+- **testing** — healthcheck URLs, timeout, failure threshold
+- **selection** — strategy (latency), minimum acceptable latency, backup profile count
+- **cache** — caching directory and fallback behavior
+- **logging** — log level, format, file output
+
+### Example config
 
 ```yaml
 sources:
-  - url: "https://your-profile-url.com"
+  - url: "https://example.com/subscription"
     type: "base64"
-    refresh: "1h"          # Обновлять профили каждый час
-    filter: ""             # Фильтр профилей (опционально)
+    refresh: "1h"
     enabled: true
-    priority: 1
-
-cache:
-  enabled: true                              # Использовать кеширование
-  directory: "~/.cache/wintermute/profiles"  # Директория кеша
-  fallback_on_error: true                    # Использовать кеш при недоступности источника
 
 network:
-  interface: "eth0"        # Ваш сетевой интерфейс
+  wan_interface: "eth0"
   exclude_subnets:
-    - "192.168.50.0/24"    # Локальная сеть (не маршрутизировать)
-
+    - "192.168.0.0/16"
   tun:
     name: "wintermute-tun"
     subnet: "172.19.0.0/30"
@@ -73,109 +99,93 @@ network:
 testing:
   healthcheck_urls:
     - "https://1.1.1.1/cdn-cgi/trace"
-    - "https://api.ipify.org?format=json"
-
-  timeout: 5                    # Таймаут проверки (секунды)
-  healthcheck_interval: "30s"   # Интервал проверки туннеля
-  failure_threshold: 3          # Количество неудач до переключения
+    - "http://connectivitycheck.gstatic.com/generate_204"
+  timeout: 5
+  healthcheck_interval: "30s"
+  failure_threshold: 3
+  max_test: 100
 
 selection:
-  strategy: "latency"           # Стратегия выбора профиля
-  min_acceptable_latency: 500   # Макс допустимый пинг (мс)
-  auto_switch: true             # Авто-переключение при падении
-  switch_delay: "10s"           # Задержка перед переключением
-  backup_profiles_count: 3      # Количество резервных профилей
+  strategy: "latency"
+  min_acceptable_latency: 500
+  auto_switch: true
+  backup_profiles_count: 3
 ```
 
-## Использование
+## Usage
 
-### Запуск
+The application must be run as **root** because it creates a TUN interface, modifies routing tables, and configures iptables rules.
+
+Using the virtual environment:
 
 ```bash
-sudo ./wintermute.py
+sudo .venv/bin/python src/wintermute.py
 ```
 
-или с указанием конфига:
+Or specifying a custom config path:
 
 ```bash
-sudo ./wintermute.py -c /path/to/config.yaml
+sudo .venv/bin/python src/wintermute.py -c /path/to/config.yaml
 ```
 
-### Остановка
+### Hotkeys
 
-Нажмите `Ctrl+C` для корректной остановки.
+| Key | Action |
+|-----|--------|
+| F1 | Toggle help |
+| F2 | Manual profile selection |
+| F3 | Manage profile sources |
+| F4 | Edit application configuration |
+| F5 | Reload profiles from sources |
+| F6 | Switch to next best profile (current marked as broken) |
+| F7 | Clear broken profiles and start full re-test |
+| F8 | Load profiles from USB drive |
+| F9 | Toggle healthcheck |
 
-## 📊 Как это работает
+Press Ctrl+C to terminate.
 
-1. **Загрузка профилей**: Wintermute загружает профили из указанных источников
-2. **Кеширование**: Сохраняет профили на диск (~/.cache/wintermute/profiles)
-3. **Тестирование**: Тестирует TCP подключение к первым 20 профилям
-4. **Выбор лучшего**: Выбирает профиль с минимальным пингом
-5. **Запуск sing-box**: Генерирует конфиг и запускает sing-box в TUN режиме
-6. **Мониторинг**: Healthcheck постоянно проверяет работу туннеля
-7. **Автопереключение**: При падении автоматически пробует резервные профили
-8. **Обновление**: Раз в `refresh` период обновляет список профилей
-9. **Fallback на кеш**: Если источник недоступен - использует кешированные профили
+## How it works
 
-## 🔧 Структура проекта
+1. **Profile loading** — Wintermute downloads profiles from configured sources
+2. **Caching** — saves profiles to disk; uses cache when sources are unavailable
+3. **Testing** — tests TCP connectivity to the first N profiles, optionally verifies response content via MD5 hash
+4. **Selection** — picks the profile with the lowest latency
+5. **Engine launch** — generates an engine-specific config (sing-box or xray depending on protocol/transport) and starts it as a child process in TUN mode
+6. **Monitoring** — healthchecker periodically verifies tunnel connectivity
+7. **Failover** — on failure, tries backup profiles first, then performs a full re-test
+8. **Refresh** — profiles are updated in the background at the configured interval
 
-```
-wintermute/
-├── wintermute.py          # Главный скрипт
-├── config_manager.py      # Управление конфигурацией
-├── profile_manager.py     # Загрузка и тестирование профилей
-├── healthcheck.py         # Мониторинг туннеля
-├── network_setup.py       # Настройка iptables и маршрутизации
-├── utils.py              # Утилиты (поиск sing-box)
-├── config.yaml           # Конфигурация
-├── proxy_tunnel.py        # Старый скрипт (не используется)
-└── README.md            # Документация
-```
+## Supported protocols and transports
 
-## 🐛 Отладка
+- VLESS (TCP, WebSocket, gRPC, HTTP, xHTTP)
+- VLESS with TLS and Reality
+- Shadowsocks (AEAD ciphers)
 
-### Логи sing-box
+Engine selection is automatic: profiles with xHTTP transport use xray-core; all others use sing-box.
 
-Wintermute выводит логи sing-box в консоль. Для более детальной отладки:
+## Debugging
+
+Enable debug logging in config.yaml:
 
 ```yaml
-log:
-  level: "debug"  # в конфиге sing-box
+logging:
+  level: "debug"
 ```
 
-### Проверка интерфейсов
+Check TUN interface:
 
 ```bash
-ip link show              # Список интерфейсов
-ip addr show wintermute-tun  # TUN интерфейс
+ip link show wintermute-tun
+ip addr show wintermute-tun
 ```
 
-### Проверка маршрутов
+## Compatibility
 
-```bash
-ip route show
-ip route show table all
-```
-
-## 📝 Примечания
-
-- **Требуются права root** для создания TUN интерфейса
-- Локальные сети (указанные в `exclude_subnets`) не маршрутизируются через туннель
-- При падении туннеля сначала пробуются резервные профили, затем происходит полная перезагрузка
-- Профили обновляются в фоне без остановки текущего туннеля
-
-## 🤝 Совместимость
-
-Протестировано на:
+Tested on:
 - Ubuntu 22.04+
 - Debian 11+
 - Arch Linux
 
-## 📜 Лицензия
+## License
 
 MIT
-
-## 🙏 Благодарности
-
-- [sing-box](https://github.com/SagerNet/sing-box) - отличный универсальный прокси инструмент
-- Оригинальный скрипт Throne за идеи парсинга профилей

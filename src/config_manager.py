@@ -24,6 +24,18 @@ def parse_time_interval(interval: str) -> int:
         return int(interval)
 
 
+def format_time_interval(seconds: int) -> str:
+    """
+    Format seconds to a human-readable interval string.
+    Supports: 1h, 30m, 120s
+    """
+    if seconds % 3600 == 0:
+        return f"{seconds // 3600}h"
+    if seconds % 60 == 0:
+        return f"{seconds // 60}m"
+    return f"{seconds}s"
+
+
 @dataclass
 class LoggingConfig:
     level: str
@@ -116,7 +128,8 @@ class ConfigManager:
 
     def load(self) -> Config:
         if not self.config_path.exists():
-            raise FileNotFoundError(f"No config file found: {self.config_path}")
+            raise FileNotFoundError(
+                f"No config file found: {self.config_path}")
 
         with open(self.config_path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f)
@@ -149,13 +162,13 @@ class ConfigManager:
         net = data.get("network", {})
         tun = net.get("tun", {})
         if not tun and "tun_name" not in net:
-             # try old structure if tun is not a dict
-             tun = {}
+            # try old structure if tun is not a dict
+            tun = {}
 
         # Handle migration from 'interface' to 'wan_interface'
         wan_interface = net.get("wan_interface")
         if wan_interface is None:
-             wan_interface = net.get("interface", "auto")
+            wan_interface = net.get("interface", "auto")
 
         lan_interface = net.get("lan_interface")
 
@@ -163,8 +176,10 @@ class ConfigManager:
             lan_interface=lan_interface,
             wan_interface=wan_interface,
             exclude_subnets=net.get("exclude_subnets", []),
-            tun_name=tun.get("name") or net.get("tun_name") or "wintermute-tun",
-            tun_subnet=tun.get("subnet") or net.get("tun_subnet") or "172.19.0.0/30",
+            tun_name=tun.get("name") or net.get(
+                "tun_name") or "wintermute-tun",
+            tun_subnet=tun.get("subnet") or net.get(
+                "tun_subnet") or "172.19.0.0/30",
             mtu=tun.get("mtu") or net.get("mtu") or 1500,
             ipv4_forward=net.get("ipv4_forward", False),
         )
@@ -178,7 +193,8 @@ class ConfigManager:
                 test.get("healthcheck_interval", "30s")
             ),
             failure_threshold=test.get("failure_threshold", 3),
-            initial_delay=parse_time_interval(test.get("initial_delay", "10s")),
+            initial_delay=parse_time_interval(
+                test.get("initial_delay", "10s")),
             max_test=test.get("max_test", 100),
             healthcheck_content_url=test.get("healthcheck_content_url", None),
             healthcheck_content_md5=test.get("healthcheck_content_md5", None),
@@ -202,7 +218,8 @@ class ConfigManager:
         cache_data = data.get("cache", {})
         cache = CacheConfig(
             enabled=cache_data.get("enabled", True),
-            directory=cache_data.get("directory", "~/.cache/wintermute/profiles"),
+            directory=cache_data.get(
+                "directory", "~/.cache/wintermute/profiles"),
             fallback_on_error=cache_data.get("fallback_on_error", True),
         )
 
@@ -236,17 +253,14 @@ class ConfigManager:
                 "url": src.url,
                 "enabled": src.enabled
             }
-            if src.type != "base64": src_dict["type"] = src.type
+            if src.type != "base64":
+                src_dict["type"] = src.type
 
-            # Helper to convert seconds back to interval string
-            def to_interval(sec):
-                if sec % 3600 == 0: return f"{sec // 3600}h"
-                if sec % 60 == 0: return f"{sec // 60}m"
-                return f"{sec}s"
-
-            src_dict["refresh"] = to_interval(src.refresh)
-            if src.filter: src_dict["filter"] = src.filter
-            if src.priority != 1: src_dict["priority"] = src.priority
+            src_dict["refresh"] = format_time_interval(src.refresh)
+            if src.filter:
+                src_dict["filter"] = src.filter
+            if src.priority != 1:
+                src_dict["priority"] = src.priority
             data["sources"].append(src_dict)
 
         # Update cache
@@ -273,17 +287,12 @@ class ConfigManager:
         data["network"] = net_dict
 
         # Update testing
-        def to_interval(sec):
-            if sec % 3600 == 0: return f"{sec // 3600}h"
-            if sec % 60 == 0: return f"{sec // 60}m"
-            return f"{sec}s"
-
         data["testing"] = {
             "healthcheck_urls": self.config.testing.healthcheck_urls,
             "timeout": self.config.testing.timeout,
-            "healthcheck_interval": to_interval(self.config.testing.healthcheck_interval),
+            "healthcheck_interval": format_time_interval(self.config.testing.healthcheck_interval),
             "failure_threshold": self.config.testing.failure_threshold,
-            "initial_delay": to_interval(self.config.testing.initial_delay),
+            "initial_delay": format_time_interval(self.config.testing.initial_delay),
             "max_test": self.config.testing.max_test
         }
         if self.config.testing.healthcheck_content_url:
@@ -296,7 +305,7 @@ class ConfigManager:
             "strategy": self.config.selection.strategy,
             "min_acceptable_latency": self.config.selection.min_acceptable_latency,
             "auto_switch": self.config.selection.auto_switch,
-            "switch_delay": to_interval(self.config.selection.switch_delay),
+            "switch_delay": format_time_interval(self.config.selection.switch_delay),
             "backup_profiles_count": self.config.selection.backup_profiles_count,
             "prefer_xray": self.config.selection.prefer_xray,
             "max_test_profiles": self.config.selection.max_test_profiles,
@@ -305,7 +314,8 @@ class ConfigManager:
         }
 
         with open(self.config_path, "w", encoding="utf-8") as f:
-            yaml.dump(data, f, sort_keys=False, allow_unicode=True, default_flow_style=False)
+            yaml.dump(data, f, sort_keys=False,
+                      allow_unicode=True, default_flow_style=False)
 
     def get_config(self) -> Config:
         if self.config is None:

@@ -4,7 +4,7 @@ import re
 from datetime import datetime
 from typing import Optional
 
-from config_manager import ConfigManager, parse_time_interval
+from config_manager import ConfigManager, format_time_interval, parse_time_interval
 from rich.console import Console, Group
 from rich.layout import Layout
 from rich.live import Live
@@ -12,7 +12,6 @@ from rich.panel import Panel
 from rich.text import Text
 from rich.align import Align
 from rich.progress import ProgressBar
-from rich.logging import RichHandler
 from rich.cells import cell_len
 from urllib.parse import urlparse
 import logging
@@ -304,14 +303,14 @@ class UI:
                     ping_style = "red"
 
                 if is_broken:
-                    ping_style = "dim gray"
+                    ping_style = "grey37"
 
                 prefix = "> " if is_current else "  "
                 protocol_char = "X" if p.extra.get("type") == "xhttp" else "S"
 
                 if is_broken:
-                    protocol_style = "dim gray"
-                    name_style = "dim gray"
+                    protocol_style = "grey37"
+                    name_style = "grey37"
                 else:
                     protocol_style = "bold green" if protocol_char == "X" else "bold orange1"
                     name_style = "bold white" if is_current else ""
@@ -555,6 +554,8 @@ class UI:
         help_text.append("- Toggle Healthcheck (enable/disable auto-switching)\n\n")
         help_text.append(" [Arrows] ", style="bold cyan")
         help_text.append("- Navigate in manual selection mode\n")
+        help_text.append(" [x] ", style="bold cyan")
+        help_text.append("- Toggle broken status (in F2 mode)\n")
         help_text.append(" [Enter] ", style="bold cyan")
         help_text.append("- Select profile or refresh UI\n\n")
         help_text.append(" [Ctrl+C] ", style="bold red")
@@ -773,11 +774,6 @@ class UI:
     def _get_config_fields(self):
         c = self.config
 
-        def to_interval(sec):
-            if sec % 3600 == 0: return f"{sec // 3600}h"
-            if sec % 60 == 0: return f"{sec // 60}m"
-            return f"{sec}s"
-
         return [
             {"label": "Cache: Enabled", "val": c.cache.enabled, "type": bool, "obj": c.cache, "attr": "enabled"},
             {"label": "Cache: Directory", "val": c.cache.directory, "type": str, "obj": c.cache, "attr": "directory"},
@@ -795,15 +791,15 @@ class UI:
             {"label": "Testing: Content URL", "val": c.testing.healthcheck_content_url or "", "type": str, "obj": c.testing, "attr": "healthcheck_content_url"},
             {"label": "Testing: Content MD5", "val": c.testing.healthcheck_content_md5 or "", "type": str, "obj": c.testing, "attr": "healthcheck_content_md5"},
             {"label": "Testing: Timeout", "val": c.testing.timeout, "type": int, "obj": c.testing, "attr": "timeout"},
-            {"label": "Testing: Health Interval", "val": to_interval(c.testing.healthcheck_interval), "type": "interval", "obj": c.testing, "attr": "healthcheck_interval"},
+            {"label": "Testing: Health Interval", "val": format_time_interval(c.testing.healthcheck_interval), "type": "interval", "obj": c.testing, "attr": "healthcheck_interval"},
             {"label": "Testing: Failure Threshold", "val": c.testing.failure_threshold, "type": int, "obj": c.testing, "attr": "failure_threshold"},
-            {"label": "Testing: Initial Delay", "val": to_interval(c.testing.initial_delay), "type": "interval", "obj": c.testing, "attr": "initial_delay"},
+            {"label": "Testing: Initial Delay", "val": format_time_interval(c.testing.initial_delay), "type": "interval", "obj": c.testing, "attr": "initial_delay"},
             {"label": "Testing: Max Test", "val": c.testing.max_test, "type": int, "obj": c.testing, "attr": "max_test"},
 
             {"label": "Selection: Strategy", "val": c.selection.strategy, "type": str, "obj": c.selection, "attr": "strategy"},
             {"label": "Selection: Min Latency", "val": c.selection.min_acceptable_latency, "type": int, "obj": c.selection, "attr": "min_acceptable_latency"},
             {"label": "Selection: Auto Switch", "val": c.selection.auto_switch, "type": bool, "obj": c.selection, "attr": "auto_switch"},
-            {"label": "Selection: Switch Delay", "val": to_interval(c.selection.switch_delay), "type": "interval", "obj": c.selection, "attr": "switch_delay"},
+            {"label": "Selection: Switch Delay", "val": format_time_interval(c.selection.switch_delay), "type": "interval", "obj": c.selection, "attr": "switch_delay"},
             {"label": "Selection: Backup Count", "val": c.selection.backup_profiles_count, "type": int, "obj": c.selection, "attr": "backup_profiles_count"},
             {"label": "Selection: Prefer Xray", "val": c.selection.prefer_xray, "type": bool, "obj": c.selection, "attr": "prefer_xray"},
         ]
@@ -944,7 +940,7 @@ class UI:
                 ping_style = "red"
 
             if is_broken:
-                ping_style = "dim gray"
+                ping_style = "grey37"
 
             protocol_char = "X" if p.extra.get('type') == 'xhttp' else "S"
             protocol_style = "bold green" if p.extra.get('type') == 'xhttp' else "bold orange3"
@@ -953,12 +949,20 @@ class UI:
                 style = "bold white on blue"
                 prefix = "> "
             else:
-                style = "dim gray" if is_broken else "white"
+                style = "grey37" if is_broken else "white"
                 prefix = "  "
 
             line = Text()
             line.append(prefix, style="bold blink" if (is_current and not is_selected) else "")
-            line.append(protocol_char, style=protocol_style if not is_selected else "bold white on blue")
+
+            # Protocol char styling when broken or selected
+            p_style = protocol_style
+            if is_selected:
+                p_style = "bold white on blue"
+            elif is_broken:
+                p_style = "grey37"
+
+            line.append(protocol_char, style=p_style)
             line.append(" ")
             line.append(name, style=style)
 
@@ -979,7 +983,9 @@ class UI:
         if end_idx < total:
             content.append("  ↓ ... more profiles below\n", style="dim")
 
-        return Panel(content, title="Manual Selection", border_style="cyan")
+        footer = Text("\n [x] Toggle Broken  [Enter] Select  [F2/Esc] Close", justify="center", style="bold cyan")
+
+        return Panel(Group(content, footer), title="Manual Selection", border_style="cyan")
 
     def register_hotkey(self, key: str, callback):
         self.hotkeys[key] = callback
@@ -1103,6 +1109,17 @@ class UI:
                             with self.lock:
                                 self.selected_profile_index = min(len(self.test_results) - 1, self.selected_profile_index + 1)
                             self.update_render()
+                        elif 'x' in data or 'X' in data:
+                            profile = None
+                            callback = None
+                            with self.lock:
+                                if 0 <= self.selected_profile_index < len(self.test_results):
+                                    profile = self.test_results[self.selected_profile_index]
+                                    callback = self.manual_callback
+
+                            if callback and profile:
+                                threading.Thread(target=callback, args=(profile, "mark_broken"), daemon=True).start()
+                            self.update_render()
                         elif '\n' in data or '\r' in data:
                             # Selection confirmed
                             profile = None
@@ -1167,7 +1184,6 @@ class UI:
                                             elif ftype == list:
                                                 setattr(obj, attr, [s.strip() for s in new_val.split(",") if s.strip()])
                                             elif ftype == "interval":
-                                                from config_manager import parse_time_interval
                                                 setattr(obj, attr, parse_time_interval(new_val))
                                             else:
                                                 setattr(obj, attr, new_val)
@@ -1237,9 +1253,8 @@ class UI:
                                                 # Try to parse as interval if it ends with h/m/s
                                                 from config_manager import parse_time_interval
                                                 self.edit_source_obj["refresh"] = parse_time_interval(new_val)
-                                            except:
-                                                try: self.edit_source_obj["refresh"] = int(new_val)
-                                                except: pass
+                                            except Exception:
+                                                self.edit_source_obj["refresh"] = int(new_val) if new_val.isdigit() else 3600
                                         else:
                                             self.edit_source_obj[field_name] = new_val
                                     self.update_render()

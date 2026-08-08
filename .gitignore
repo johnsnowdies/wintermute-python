@@ -1,7 +1,28 @@
+# IDE
 .idea
-config.yaml
-venv
-__pycache__
 wintermute_python.sublime-project
 wintermute_python.sublime-workspace
-logs
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv
+venv
+
+# Config
+config.yaml
+
+# Logs & diagnostics
+logs/
+*.log
+diag_*.txt
+
+# Downloaded packages
+*.deb
+
+# Test artifacts
+MagicMock/
+
+# Cache
+cache/

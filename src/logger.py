@@ -97,9 +97,7 @@ def setup_logger(
 
     # Use stdout only if UI is not active to avoid conflicts with rich.live
     if not ui:
-        from rich.logging import RichHandler
-        # RichHandler handles its own levels and time by default,
-        # but we can customize it or use a simple StreamHandler with ColoredFormatter
+        # Use a simple StreamHandler with ColoredFormatter for stdout
         stream_handler = logging.StreamHandler(sys.stdout)
         stream_handler.setLevel(log_level)
         stream_handler.setFormatter(colored_formatter)

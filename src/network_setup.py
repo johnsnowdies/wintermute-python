@@ -370,10 +370,8 @@ def check_interface_exists(interface: str) -> bool:
     return result.returncode == 0
 
 
-@DeprecationWarning
 def get_available_interfaces() -> List[str]:
-    """
-    Returns a list of available network interfaces
+    """[Deprecated] Returns a list of available network interfaces.
 
     Returns:
         List of interface names
@@ -388,11 +386,11 @@ def get_available_interfaces() -> List[str]:
     interfaces = []
     for line in result.stdout.strip().split("\n"):
         if ":" in line:
-            # Формат: "1: lo: <LOOPBACK,UP,LOWER_UP> ..."
+            # Format: "1: lo: <LOOPBACK,UP,LOWER_UP> ..."
             parts = line.split(":")
             if len(parts) >= 2:
                 iface = parts[1].strip()
-                # Исключаем lo и docker интерфейсы
+                # Exclude lo and docker interfaces
                 if (
                     iface != "lo"
                     and not iface.startswith("docker")

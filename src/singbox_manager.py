@@ -79,7 +79,7 @@ class SingboxManager:
     def start(self):
         """Launching Sing-Box"""
         if self._running and self.process:
-            self.logger.warn("SingboxManager start failed: already running")
+            self.logger.warning("SingboxManager start failed: already running")
             return False
 
         self.logger.debug(f"Running Sing-Box with config: {self.config_path}")

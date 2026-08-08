@@ -64,7 +64,7 @@ class HealthChecker:
     def start(self):
         """Запускает мониторинг в фоновом потоке"""
         if self._running:
-            self.logger.warn("HealthChecker already running")
+            self.logger.warning("HealthChecker already running")
             return
 
         self._running = True
@@ -144,7 +144,7 @@ class HealthChecker:
                             if external_fault:
                                 reasons.append("sing-box ERROR burst")
                             reasons_text = ", ".join(reasons) if reasons else "unknown"
-                            self.logger.warn(
+                            self.logger.warning(
                                 f"Detected fault ({self._failure_count} in current minute / allowed {self.failure_threshold}) [{reasons_text}]"
                             )
 
@@ -197,7 +197,7 @@ class HealthChecker:
                     response = requests.get(url, timeout=self.timeout, verify=False)
                     if response.status_code in [200, 204]:
                         return True
-                except:
+                except Exception:
                     continue
             return False
 

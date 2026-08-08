@@ -6,7 +6,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Callable
+from typing import Dict, List, Optional, Tuple, Callable, Set
 from urllib.parse import parse_qs, unquote
 
 import requests
@@ -81,7 +81,7 @@ class ProfileCache:
             with open(cache_path, "r", encoding="utf-8") as f:
                 cache_data = json.load(f)
 
-            # Проверяем возраст кеша
+            # Check cache age
             if max_age is not None:
                 age = time.time() - cache_data.get("timestamp", 0)
                 if age > max_age:
@@ -179,7 +179,7 @@ class ProfileLoader:
         except Exception as e:
             self.logger.error(f"   Profile loading failure, fallback to cache: {e}")
 
-            # Fallback на кеш при ошибке
+            # Fallback to cache on error
             if use_cache_fallback and self.cache:
                 cached = self.cache.load(
                     url, max_age=None
@@ -595,7 +595,7 @@ class ProfileManager:
         self.profiles: List[Profile] = []
         self.working_profiles: List[Profile] = []
         self.selected_profile: Optional[Profile] = None
-        self.broken_profiles: Set[str] = set() # Store raw_url of broken profiles
+        self.broken_profiles: Set[str] = set()  # Store raw_url of broken profiles
         self._lock = threading.Lock()
         self._loader = ProfileLoader(cache_dir, use_cache)
         self._refresh_thread: Optional[threading.Thread] = None
@@ -609,11 +609,11 @@ class ProfileManager:
         self, sources: List, use_cache_fallback: bool = True
     ) -> int:
         """
-        Загружает профили из источников с поддержкой кеша
+        Load profiles from sources with cache support
 
         Args:
-            sources: Список источников
-            use_cache_fallback: Использовать кеш при недоступности источника
+            sources: List of source configurations
+            use_cache_fallback: Use cache when source is unavailable
         """
         raw_profiles = []
 
@@ -661,12 +661,12 @@ class ProfileManager:
         self, sources: List, refresh_interval: int, on_refresh_callback: callable = None
     ):
         """
-        Запускает автоматическое обновление профилей
+        Start automatic profile refresh
 
         Args:
-            sources: Список источников
-            refresh_interval: Интервал обновления в секундах
-            on_refresh_callback: Callback вызываемый после обновления
+            sources: List of source configurations
+            refresh_interval: Refresh interval in seconds
+            on_refresh_callback: Callback invoked after refresh
         """
         if self._running:
             self.logger.warning("Auto refresh already running")
@@ -728,6 +728,12 @@ class ProfileManager:
         with self._lock:
             self.broken_profiles.add(profile.raw_url)
 
+    def unmark_profile_as_broken(self, profile: Profile):
+        """Removes a profile from broken list"""
+        with self._lock:
+            if profile.raw_url in self.broken_profiles:
+                self.broken_profiles.remove(profile.raw_url)
+
     def clear_broken_profiles(self):
         """Clears the list of broken profiles"""
         with self._lock:
@@ -780,7 +786,6 @@ class ProfileManager:
                 if p.extra.get("type") == "xhttp":
                     best = p
                     break
-
 
         if best.latency and best.latency <= min_latency:
             self.logger.info("Profile picked")

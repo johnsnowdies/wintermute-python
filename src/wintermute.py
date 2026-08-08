@@ -158,7 +158,7 @@ class Wintermute:
         # TLS/Reality
 
         if extra["security"] in ["tls", "reality"]:
-            tls_config = {"enabled": True, "utils": {}, "reality": {}}
+            tls_config = {"enabled": True, "utls": {}, "reality": {}}
 
             if extra.get("sni"):
                 tls_config["server_name"] = extra["sni"]
@@ -742,8 +742,22 @@ class Wintermute:
                 self.healthchecker.stop()
             self.ui.set_health("OFF", "dim")
 
-    def switch_to_specific_profile(self, profile):
-        """Switch to a specific profile manually"""
+    def switch_to_specific_profile(self, profile, action="select"):
+        """Switch to a specific profile manually or toggle broken status"""
+        if action == "mark_broken":
+            is_broken = self.profile_manager.is_profile_broken(profile)
+            if is_broken:
+                self.logger.info(f"Manually unmarking profile as broken: {profile.comment or profile.host}")
+                self.profile_manager.unmark_profile_as_broken(profile)
+                self.ui.add_app_log(f"[green]Unmarked as broken:[/green] {profile.comment or profile.host}")
+            else:
+                self.logger.info(f"Manually marking profile as broken: {profile.comment or profile.host}")
+                self.profile_manager.mark_profile_as_broken(profile)
+                self.ui.add_app_log(f"[yellow]Marked as broken:[/yellow] {profile.comment or profile.host}")
+
+            self.ui.set_status_data(broken_profiles=self.profile_manager.broken_profiles.copy())
+            return
+
         self.logger.info(f"Manually switching to profile: {profile.comment or profile.host}")
 
         # Stop everything
@@ -799,9 +813,13 @@ class Wintermute:
         if not available:
             self.logger.warning("No more working profiles. Starting full re-test.")
             self.ui.add_app_log("[yellow]No more working profiles. Re-testing all...[/yellow]")
-            if self.load_and_select_profile():
-                if self.setup_singbox():
-                    self.ui.set_mode("WORKING")
+            # We use a separate thread for testing to avoid UI freeze
+            def run_retest_and_switch():
+                if self.load_and_select_profile():
+                    if self.setup_singbox():
+                        self.ui.set_mode("WORKING")
+
+            threading.Thread(target=run_retest_and_switch, daemon=True).start()
             return
 
         # Pick best according to prefer_xray
@@ -818,8 +836,8 @@ class Wintermute:
         self.ui.set_profile(best.comment or best.host)
 
         if self.setup_singbox():
-             self.ui.set_mode("WORKING")
-             self.ui.add_app_log(f"[green]Switched to[/green] {best.comment or best.host}")
+            self.ui.set_mode("WORKING")
+            self.ui.add_app_log(f"[green]Switched to[/green] {best.comment or best.host}")
 
     def retest(self):
         """Reset broken profiles and start a full re-test"""
@@ -983,10 +1001,10 @@ class Wintermute:
                     enabled=data["enabled"],
                     priority=data["priority"]
                 )
-                if index == -1: # New
+                if index == -1:  # New
                     self.config.sources.append(new_src)
                     self.ui.add_app_log("[green]New source added and config saved[/green]")
-                else: # Update
+                else:  # Update
                     self.config.sources[index] = new_src
                     self.ui.add_app_log("[green]Source updated and config saved[/green]")
                 self.config_manager.save()
