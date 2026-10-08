@@ -1,3 +1,4 @@
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
@@ -125,6 +126,7 @@ class ConfigManager:
     def __init__(self, config_path: str = "config.yaml"):
         self.config_path = Path(config_path)
         self.config: Optional[Config] = None
+        self._save_lock = threading.Lock()
 
     def load(self) -> Config:
         if not self.config_path.exists():
@@ -236,15 +238,16 @@ class ConfigManager:
 
     def save(self):
         """Save current configuration to file"""
-        if not self.config:
-            return
+        with self._save_lock:
+            if not self.config:
+                return
 
-        # Read existing file to preserve structure where possible (best effort with PyYAML)
-        try:
-            with open(self.config_path, "r", encoding="utf-8") as f:
-                data = yaml.safe_load(f) or {}
-        except Exception:
-            data = {}
+            # Read existing file to preserve structure where possible (best effort with PyYAML)
+            try:
+                with open(self.config_path, "r", encoding="utf-8") as f:
+                    data = yaml.safe_load(f) or {}
+            except Exception:
+                data = {}
 
         # Update sources
         data["sources"] = []

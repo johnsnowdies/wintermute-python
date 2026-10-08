@@ -359,6 +359,7 @@ class ProfileTester:
     """Testing profiles"""
 
     STARTING_PORT = 30000
+    MAX_CONCURRENT = 20  # Limit concurrent TCP/proxy tests to avoid FD exhaustion
 
     @staticmethod
     def test_real_connection(
@@ -473,8 +474,28 @@ class ProfileTester:
         test_real: bool,
         proxy_port: int,
         config: str = "config.yaml",
+        semaphore: Optional[asyncio.Semaphore] = None,
     ) -> Optional[Profile]:
         """Asynchronous testing of a single profile"""
+        if semaphore:
+            async with semaphore:
+                return await ProfileTester._do_test_profile(
+                    profile, idx, timeout, test_real, proxy_port, config
+                )
+        return await ProfileTester._do_test_profile(
+            profile, idx, timeout, test_real, proxy_port, config
+        )
+
+    @staticmethod
+    async def _do_test_profile(
+        profile: Profile,
+        idx: int,
+        timeout: int,
+        test_real: bool,
+        proxy_port: int,
+        config: str = "config.yaml",
+    ) -> Optional[Profile]:
+        """Internal: run a single profile test (no semaphore)."""
         logger = get_logger(__name__)
         logger.debug(
             f"[{idx+1:2d}] {profile.host}:{profile.port} ({profile.protocol.upper()})..."
@@ -524,12 +545,14 @@ class ProfileTester:
         total_to_test = min(len(profiles), max_test)
         logger.info(f"Testing {total_to_test} profiles...")
 
+        semaphore = asyncio.Semaphore(ProfileTester.MAX_CONCURRENT)
+
         # Creating tasks for parallel testing
         tasks = []
         for idx, profile in enumerate(profiles[:max_test]):
             proxy_port = ProfileTester.STARTING_PORT + idx
             task = ProfileTester._test_single_profile(
-                profile, idx, timeout, test_real, proxy_port, config
+                profile, idx, timeout, test_real, proxy_port, config, semaphore
             )
             tasks.append(task)
 

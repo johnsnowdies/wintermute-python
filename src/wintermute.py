@@ -39,17 +39,11 @@ class Wintermute:
         self.config_manager = ConfigManager(config_path)
         self.config = self.config_manager.load()
 
-        # Initial logging setup (root logger)
-        if not test_mode:
-            setup_logger(
-                level=self.config.logging.level,
-                log_format=self.config.logging.format,
-                log_file=self.config.logging.file,
-                file_level=self.config.logging.file_level,
-            )
-
         self.logger = get_logger(__name__)
         self.test_mode = test_mode
+
+        # Resolved WAN interface — preserves original "auto" in config
+        self._resolved_wan_interface: Optional[str] = None
 
         cache_dir = (
             self.config.cache.directory if self.config.cache.enabled else "./cache"
@@ -78,6 +72,23 @@ class Wintermute:
         # register cleanup on SIGTERM
         if not test_mode:
             atexit.register(self.cleanup)
+
+    @property
+    def _effective_wan_interface(self) -> str:
+        """Return the resolved WAN interface or fall back to config value."""
+        cfg_val = self.config.network.wan_interface
+        # Explicit config value takes precedence
+        if cfg_val and cfg_val != "auto":
+            return cfg_val
+        # Resolved value from auto-detection
+        if self._resolved_wan_interface:
+            return self._resolved_wan_interface
+        # Last resort — try to detect on the fly
+        detected = get_default_interface()
+        if detected:
+            self._resolved_wan_interface = detected
+            return detected
+        return cfg_val or ""
 
     def _create_singbox_outbound(self, profile: Profile) -> dict:
         """Create outbound configuration"""
@@ -255,8 +266,11 @@ class Wintermute:
         network_config,
         proxy_mode: bool = False,
         proxy_port: int = 3128,
+        wan_interface: Optional[str] = None,
     ) -> dict:
         """Create Xray config file"""
+        if wan_interface is None:
+            wan_interface = self._effective_wan_interface
 
         # Xray config is a bit different from Sing-box
         # We need to translate Sing-box style outbound/inbound to Xray style
@@ -282,7 +296,7 @@ class Wintermute:
                     "gateway": [f"{tun_ip}/{network_config.tun_subnet.split('/')[1]}"],
                     "dns": ["1.1.1.1"],
                     "autoSystemRoutingTable": False,
-                    "autoOutboundsInterface": network_config.wan_interface
+                    "autoOutboundsInterface": wan_interface
                 },
                 "sniffing": {
                     "enabled": True,
@@ -535,6 +549,7 @@ class Wintermute:
                 self.config.network,
                 proxy_mode,
                 proxy_port,
+                wan_interface=self._effective_wan_interface,
             )
             config_path = self._save_config(config, "xray", proxy_mode, proxy_port)
 
@@ -563,7 +578,7 @@ class Wintermute:
                     tun_interface=self.config.network.tun_name,
                     tun_addr=f"{tun_ip}/{self.config.network.tun_subnet.split('/')[1]}",
                     proxy_host=profile.host,
-                    wan_interface=self.config.network.wan_interface,
+                    wan_interface=self._effective_wan_interface,
                     exclude_subnets=self.config.network.exclude_subnets,
                 )
         else:
@@ -1009,6 +1024,10 @@ class Wintermute:
                     self.ui.add_app_log("[green]Source updated and config saved[/green]")
                 self.config_manager.save()
 
+            # Restart auto-refresh with new sources
+            self.profile_manager.stop_auto_refresh()
+            self.start_profile_refresh()
+
             # Update UI list
             self.ui.set_status_data(sources=[s.url for s in self.config.sources])
 
@@ -1019,6 +1038,8 @@ class Wintermute:
     def handle_config_save(self):
         try:
             self.config_manager.save()
+            # Invalidate resolved interface — will be re-evaluated on next use
+            self._resolved_wan_interface = None
             self.ui.add_app_log("[green]Configuration saved successfully[/green]")
         except Exception as e:
             self.logger.error(f"Error saving config: {e}")
@@ -1048,27 +1069,33 @@ class Wintermute:
         )
 
         self.logger = get_logger(__name__)
-        self.logger.info("Wintermute")
+        self.logger.info("Wintermute started")
+
+        # Log effective interface (preserving config original value)
+        self.logger.info(f"Using WAN interface: {self._effective_wan_interface}")
+        self.logger.info(f"Config WAN interface (original): {self.config.network.wan_interface}")
 
         # Check for root
         if os.geteuid() != 0:
             self.logger.error("Wintermute requires root access")
             return 1
 
-        # Auto-detect WAN interface if needed
+        # Auto-detect WAN interface if needed (keep original "auto" in config)
         if not self.config.network.wan_interface or self.config.network.wan_interface == "auto":
             self.logger.info("Auto-detecting WAN interface...")
             detected = get_default_interface()
             if detected:
                 self.logger.info(f"Detected WAN interface: {detected}")
-                self.config.network.wan_interface = detected
+                self._resolved_wan_interface = detected
             else:
                 self.logger.error("Failed to auto-detect WAN interface. Please specify it in config.yaml")
                 return 1
+        else:
+            self._resolved_wan_interface = self.config.network.wan_interface
 
         # Check interface exist
-        if not check_interface_exists(self.config.network.wan_interface):
-            self.logger.error(f"{self.config.network.wan_interface} interface not found")
+        if not check_interface_exists(self._effective_wan_interface):
+            self.logger.error(f"{self._effective_wan_interface} interface not found")
             return 1
 
         # Load and select profile
