@@ -324,7 +324,8 @@ class ProfileLoader:
             return None
 
     def load_from_url(
-        self, url: str, profile_filter: str = "", use_cache_fallback: bool = True
+        self, url: str, profile_filter: str = "", use_cache_fallback: bool = True,
+        _happ_out: Optional[Set[str]] = None,
     ) -> List[str]:
         """
         Loads profiles from URLs with caching support.
@@ -338,6 +339,8 @@ class ProfileLoader:
              url: The URL of the source
              profile_filter: Profile filter
              use_cache_fallback: Use the cache when the source is unavailable
+             _happ_out: If provided, raw URLs that came from Happ decryption
+                        are added to this set (for badge marking).
         """
         self.logger.debug(f"Loading profiles from: {url}")
 
@@ -407,12 +410,16 @@ class ProfileLoader:
                                 subline = subline.strip()
                                 if subline and not subline.startswith("#"):
                                     profiles.append(subline)
+                                    if _happ_out is not None:
+                                        _happ_out.add(subline)
                     else:
                         # vless:// URI(s) directly
                         for subline in decrypted.split("\n"):
                             subline = subline.strip()
                             if subline:
                                 profiles.append(subline)
+                                if _happ_out is not None:
+                                    _happ_out.add(subline)
                 else:
                     self.logger.warning(f"    hpwnr failed for {line[:60]}…")
             else:
@@ -879,27 +886,26 @@ class ProfileManager:
             use_cache_fallback: Use cache when source is unavailable
         """
         raw_profiles = []
-        self._happ_source_seen = False
+        happ_raw_urls: Set[str] = set()
 
         for source in sources:
             if not source.enabled:
                 continue
 
-            if source.url.startswith("happ://"):
-                self._happ_source_seen = True
-
             raw_urls = self._loader.load_from_url(
-                source.url, source.filter, use_cache_fallback
+                source.url, source.filter, use_cache_fallback,
+                _happ_out=happ_raw_urls,
             )
             raw_profiles.extend(raw_urls)
 
         count = self.set_profiles_from_raw(raw_profiles)
 
-        # Mark profiles from Happ sources with badge H
-        if self._happ_source_seen:
+        # Mark profiles that were decrypted from inline Happ links
+        if happ_raw_urls:
             with self._lock:
                 for p in self.profiles:
-                    p.extra["source"] = "happ"
+                    if p.raw_url in happ_raw_urls:
+                        p.extra["source"] = "happ"
 
         return count
 
