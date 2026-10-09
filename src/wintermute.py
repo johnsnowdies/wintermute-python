@@ -536,7 +536,16 @@ class Wintermute:
             return False
 
         # Decide which engine to use
-        use_xray = profile.extra.get("type") == "xhttp"
+        # preferred_engine: "auto" → xhttp uses Xray, rest uses sing-box
+        #                   "xray"  → force Xray
+        #                   "singbox" → force sing-box
+        eng = self.config.selection.preferred_engine
+        if eng == "singbox":
+            use_xray = False
+        elif eng == "xray":
+            use_xray = True
+        else:
+            use_xray = profile.extra.get("type") == "xhttp"
         if not self.test_mode:
             self.ui.set_core_type("xray" if use_xray else "sing-box")
 
