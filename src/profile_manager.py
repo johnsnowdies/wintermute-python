@@ -183,38 +183,131 @@ class ProfileLoader:
             self.logger.error(f"hpwnr error for {url[:60]}…: {e}")
             return None
 
+    @staticmethod
+    def _xray_outbound_to_vless(ob: dict) -> Optional[str]:
+        """Convert a single Xray outbound dict to a vless:// URI."""
+        try:
+            proto = ob.get("protocol", "")
+            if proto != "vless":
+                return None
+            settings = ob.get("settings", {})
+            vnext = settings.get("vnext", [{}])[0]
+            user = vnext.get("users", [{}])[0]
+            uuid = user.get("id", "")
+            host = vnext.get("address", "")
+            port = vnext.get("port", 443)
+            if not uuid or not host:
+                return None
+
+            ss = ob.get("streamSettings", {})
+            params = []
+
+            net = ss.get("network", "tcp")
+            params.append(f"encryption=none")
+            params.append(f"type={net}")
+
+            sec = ss.get("security", "none")
+            if sec not in ("", "none"):
+                params.append(f"security={sec}")
+
+            # TLS / Reality settings
+            tls = ss.get("tlsSettings", {}) or {}
+            reality = ss.get("realitySettings", {}) or {}
+
+            sni = tls.get("serverName") or reality.get("serverName", "")
+            if sni:
+                params.append(f"sni={sni}")
+
+            fp = tls.get("fingerprint") or reality.get("fingerprint", "chrome")
+            params.append(f"fp={fp}")
+
+            if reality.get("publicKey"):
+                params.append(f"pbk={reality['publicKey']}")
+            if reality.get("shortId"):
+                params.append(f"sid={reality['shortId']}")
+
+            # Transport-specific params
+            xhttp = ss.get("xhttpSettings", {}) or {}
+            ws = ss.get("wsSettings", {}) or {}
+            grpc = ss.get("grpcSettings", {}) or {}
+
+            if net == "xhttp":
+                path = xhttp.get("path", "/")
+                params.append(f"path={path}")
+                xhost = xhttp.get("host", sni)
+                if xhost:
+                    params.append(f"host={xhost}")
+                mode = xhttp.get("mode", "auto")
+                params.append(f"mode={mode}")
+                extra = xhttp.get("extra", "")
+                if extra and isinstance(extra, str):
+                    params.append(f"extra={extra}")
+            elif net == "ws":
+                wpath = ws.get("path", "/")
+                params.append(f"path={wpath}")
+                whost = ws.get("host", "")
+                if whost:
+                    params.append(f"host={whost}")
+            elif net == "grpc":
+                svc = grpc.get("serviceName", "grpc")
+                params.append(f"serviceName={svc}")
+
+            qs = "&".join(params)
+            remark = ob.get("tag", ob.get("remarks", f"{host}:{port}"))
+            from urllib.parse import quote
+            return f"vless://{uuid}@{host}:{port}?{qs}#{quote(remark) if remark else ''}"
+        except Exception as e:
+            logger = get_logger(__name__)
+            logger.warning(f"Xray outbound→VLESS conversion error: {e}")
+            return None
+
     def _convert_json_to_uris(self, content: str) -> Optional[str]:
         """
-        If content looks like a JSON array of Xray configs, pipe it through
-        hpwnr uri to convert each outbound to a vless:// URI.
+        Parse Xray JSON array subscription → list of vless:// URIs.
+        Works directly without hpwnr (which drops critical fields like
+        sni, path, host in its uri mode).
         """
         text = content.strip()
         if not text.startswith("["):
-            # Maybe it's base64-wrapped JSON
             decoded = decode_b64_if_valid(text)
             if decoded and decoded.strip().startswith("["):
                 text = decoded
             else:
                 return None
 
-        hpwnr_bin = self._find_hpwnr()
-        if not hpwnr_bin:
+        try:
+            entries = json.loads(text)
+        except json.JSONDecodeError:
             return None
 
-        try:
-            result = subprocess.run(
-                [hpwnr_bin, "uri"],
-                input=text,
-                capture_output=True, text=True, timeout=30,
-            )
-            if result.returncode != 0:
-                self.logger.warning(f"hpwnr uri conversion failed: {result.stderr.strip()}")
-                return None
-            out = result.stdout.strip()
-            return out if out else None
-        except Exception as e:
-            self.logger.error(f"hpwnr uri conversion error: {e}")
+        if not isinstance(entries, list):
             return None
+
+        uris = []
+        for ent in entries:
+            if not isinstance(ent, dict):
+                continue
+            # Try outbounds array first (new format)
+            outbounds = ent.get("outbounds", [])
+            if outbounds:
+                for ob in outbounds:
+                    uri = ProfileLoader._xray_outbound_to_vless(ob)
+                    if uri:
+                        uris.append(uri)
+            else:
+                # Try direct vless:// conversion from flat object
+                ob = {"protocol": "vless", "settings": {"vnext": [{
+                    "address": ent.get("address", ent.get("server", "")),
+                    "port": ent.get("port", ent.get("server_port", 443)),
+                    "users": [{"id": ent.get("id", "")}]
+                }]}, "streamSettings": ent}
+                uri = ProfileLoader._xray_outbound_to_vless(ob)
+                if uri:
+                    uris.append(uri)
+
+        if uris:
+            return "\n".join(uris)
+        return None
 
     def _fetch_url(self, url: str) -> Optional[str]:
         """Fetch a plain HTTP(S) subscription URL, base64-decode if needed."""
