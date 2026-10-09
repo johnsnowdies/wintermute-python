@@ -135,7 +135,31 @@ class ProfileLoader:
     @staticmethod
     def _find_hpwnr() -> Optional[str]:
         import shutil
-        return shutil.which("hpwnr")
+        import os
+        from pathlib import Path
+
+        # 1. PATH (covers ~/.cargo/bin/ if sourced)
+        which = shutil.which("hpwnr")
+        if which:
+            return which
+
+        # 2. Same directory as this script
+        script_dir = Path(__file__).parent.resolve()
+        local = script_dir / "hpwnr"
+        if local.exists() and os.access(local, os.X_OK):
+            return str(local)
+
+        # 3. Current working directory
+        cwd = Path.cwd() / "hpwnr"
+        if cwd.exists() and os.access(cwd, os.X_OK):
+            return str(cwd)
+
+        # 4. Common system paths for manually placed binaries
+        for p in ["/usr/local/bin/hpwnr", "/usr/bin/hpwnr"]:
+            if os.path.exists(p) and os.access(p, os.X_OK):
+                return p
+
+        return None
 
     def _decrypt_happ(self, url: str) -> Optional[str]:
         """Decrypt a happ://crypt* link via hpwnr → plaintext."""
