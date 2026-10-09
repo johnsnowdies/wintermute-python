@@ -99,7 +99,7 @@ class SelectionConfig:
     auto_switch: bool = True
     switch_delay: int = 10  # sec
     backup_profiles_count: int = 3
-    prefer_xray: bool = False
+    preferred_engine: str = "auto"  # "xray", "singbox", "auto"
     max_test_profiles: int = 100
     test_timeout: int = 5
     test_real_connection: bool = False
@@ -202,15 +202,19 @@ class ConfigManager:
             healthcheck_content_md5=test.get("healthcheck_content_md5", None),
         )
 
-        # Selection config
+        # Selection config — migrate from prefer_xray to preferred_engine
         sel = data.get("selection", {})
+        # Backward compatibility: prefer_xray: true → preferred_engine: xray
+        preferred_engine = sel.get("preferred_engine", "auto")
+        if preferred_engine == "auto" and sel.get("prefer_xray", False):
+            preferred_engine = "xray"
         selection = SelectionConfig(
             strategy=sel.get("strategy", "latency"),
             min_acceptable_latency=sel.get("min_acceptable_latency", 500),
             auto_switch=sel.get("auto_switch", True),
             switch_delay=parse_time_interval(sel.get("switch_delay", "10s")),
             backup_profiles_count=sel.get("backup_profiles_count", 3),
-            prefer_xray=sel.get("prefer_xray", False),
+            preferred_engine=preferred_engine,
             max_test_profiles=sel.get("max_test_profiles", 100),
             test_timeout=sel.get("test_timeout", 5),
             test_real_connection=sel.get("test_real_connection", False),
@@ -310,7 +314,7 @@ class ConfigManager:
             "auto_switch": self.config.selection.auto_switch,
             "switch_delay": format_time_interval(self.config.selection.switch_delay),
             "backup_profiles_count": self.config.selection.backup_profiles_count,
-            "prefer_xray": self.config.selection.prefer_xray,
+            "preferred_engine": self.config.selection.preferred_engine,
             "max_test_profiles": self.config.selection.max_test_profiles,
             "test_timeout": self.config.selection.test_timeout,
             "test_real_connection": self.config.selection.test_real_connection

@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import socket
+import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
@@ -129,11 +130,92 @@ class ProfileLoader:
         self.cache = ProfileCache(cache_dir) if use_cache else None
         self.logger = get_logger(__name__)
 
+    # ── hpwnr helpers ────────────────────────────────────────────────────
+
+    @staticmethod
+    def _find_hpwnr() -> Optional[str]:
+        import shutil
+        return shutil.which("hpwnr")
+
+    def _decrypt_happ(self, url: str) -> Optional[str]:
+        """Decrypt a happ://crypt* link via hpwnr → plaintext."""
+        hpwnr_bin = self._find_hpwnr()
+        if not hpwnr_bin:
+            self.logger.warning(
+                "hpwnr not found — install: cargo install hpwnr"
+            )
+            return None
+        try:
+            result = subprocess.run(
+                [hpwnr_bin, url],
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode != 0:
+                self.logger.error(f"hpwnr exited {result.returncode}: {result.stderr.strip()}")
+                return None
+            out = result.stdout.strip()
+            return out if out else None
+        except Exception as e:
+            self.logger.error(f"hpwnr error for {url[:60]}…: {e}")
+            return None
+
+    def _convert_json_to_uris(self, content: str) -> Optional[str]:
+        """
+        If content looks like a JSON array of Xray configs, pipe it through
+        hpwnr uri to convert each outbound to a vless:// URI.
+        """
+        text = content.strip()
+        if not text.startswith("["):
+            # Maybe it's base64-wrapped JSON
+            decoded = decode_b64_if_valid(text)
+            if decoded and decoded.strip().startswith("["):
+                text = decoded
+            else:
+                return None
+
+        hpwnr_bin = self._find_hpwnr()
+        if not hpwnr_bin:
+            return None
+
+        try:
+            result = subprocess.run(
+                [hpwnr_bin, "uri"],
+                input=text,
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode != 0:
+                self.logger.warning(f"hpwnr uri conversion failed: {result.stderr.strip()}")
+                return None
+            out = result.stdout.strip()
+            return out if out else None
+        except Exception as e:
+            self.logger.error(f"hpwnr uri conversion error: {e}")
+            return None
+
+    def _fetch_url(self, url: str) -> Optional[str]:
+        """Fetch a plain HTTP(S) subscription URL, base64-decode if needed."""
+        try:
+            response = requests.get(url, timeout=10, verify=False)
+            response.raise_for_status()
+            content = response.text.strip()
+            decoded = decode_b64_if_valid(content)
+            if decoded:
+                content = decoded
+            return content
+        except Exception as e:
+            self.logger.error(f"  Fetch failed for {url}: {e}")
+            return None
+
     def load_from_url(
         self, url: str, profile_filter: str = "", use_cache_fallback: bool = True
     ) -> List[str]:
         """
-        Loads profiles from URLs with caching support
+        Loads profiles from URLs with caching support.
+
+        Supports:
+          - https:// … plain / base64 subscription (existing)
+          - happ://crypt* … decrypted via hpwnr, follows nesting,
+                             converts Xray JSON to VLESS URIs
 
         Args:
              url: The URL of the source
@@ -142,53 +224,62 @@ class ProfileLoader:
         """
         self.logger.debug(f"Loading profiles from: {url}")
 
-        profiles = []
+        # ── Resolve content ──────────────────────────────────────────────
+        content: Optional[str] = None
+        is_happ_source = url.startswith("happ://")
 
-        try:
-            response = requests.get(url, timeout=10, verify=False)
-            response.raise_for_status()
-            content = response.text.strip()
+        if is_happ_source:
+            self.logger.info("  Detected Happ-encrypted source, decrypting…")
+            plain = self._decrypt_happ(url)
+            if plain:
+                # Happ links often decrypt to a nested HTTPS subscription URL
+                if plain.startswith("http://") or plain.startswith("https://"):
+                    self.logger.info(f"  ↳ nested subscription: {plain[:80]}…")
+                    fetched = self._fetch_url(plain)
+                    if fetched:
+                        # Maybe JSON → convert to VLESS URIs
+                        converted = self._convert_json_to_uris(fetched)
+                        content = converted or fetched
+                    else:
+                        content = plain
+                else:
+                    content = plain
+            else:
+                self.logger.error("  Happ decryption failed")
+        else:
+            # Regular URL: fetch + base64-decode
+            fetched = self._fetch_url(url)
+            if fetched:
+                # Also try JSON conversion for non-Happ sources that serve JSON
+                converted = self._convert_json_to_uris(fetched)
+                content = converted or fetched
 
-            # Trying to decode base64
-            decoded = decode_b64_if_valid(content)
-            if decoded:
-                self.logger.debug("  decoded from base64")
-                content = decoded
-
-            # Split into lines
-            raw_lines = content.split("\n")
-
-            # Filtering profiles
-            for line in raw_lines:
-                line = line.strip()
-                if line and not line.startswith("#"):
-                    # Default filter - profiles with "Bypass" in the name
-                    if not profile_filter or profile_filter in line:
-                        profiles.append(line)
-
-            self.logger.debug(f"URL: {url}:")
-            self.logger.debug(f"   Profiles found: {len(profiles)}")
-
-            # Save cache
-            if self.cache and profiles:
-                self.cache.save(url, profiles)
-                self.logger.debug("   Profiles saved into cache")
-
-            return profiles
-
-        except Exception as e:
-            self.logger.error(f"   Profile loading failure, fallback to cache: {e}")
-
-            # Fallback to cache on error
+        if content is None:
+            # Fallback to cache
             if use_cache_fallback and self.cache:
-                cached = self.cache.load(
-                    url, max_age=None
-                )  # Любой возраст при fallback
+                cached = self.cache.load(url, max_age=None)
                 if cached:
                     self.logger.info("   Using cached profiles")
                     return cached
-
             return []
+
+        # ── Parse lines ──────────────────────────────────────────────────
+        profiles: List[str] = []
+        raw_lines = content.split("\n")
+        for line in raw_lines:
+            line = line.strip()
+            if line and not line.startswith("#"):
+                if not profile_filter or profile_filter in line:
+                    profiles.append(line)
+
+        self.logger.debug(f"   Profiles found: {len(profiles)}")
+
+        # Save cache
+        if self.cache and profiles:
+            self.cache.save(url, profiles)
+            self.logger.debug("   Profiles saved into cache")
+
+        return profiles
 
 
 class ProfileParser:
@@ -627,6 +718,8 @@ class ProfileManager:
         self._refresh_callback: Optional[Callable] = None
         self.config = config
         self.logger = get_logger(__name__)
+        # Track if any loaded source was Happ-encrypted (for badge H)
+        self._happ_source_seen: bool = False
 
     def load_profiles_from_sources(
         self, sources: List, use_cache_fallback: bool = True
@@ -639,17 +732,29 @@ class ProfileManager:
             use_cache_fallback: Use cache when source is unavailable
         """
         raw_profiles = []
+        self._happ_source_seen = False
 
         for source in sources:
             if not source.enabled:
                 continue
+
+            if source.url.startswith("happ://"):
+                self._happ_source_seen = True
 
             raw_urls = self._loader.load_from_url(
                 source.url, source.filter, use_cache_fallback
             )
             raw_profiles.extend(raw_urls)
 
-        return self.set_profiles_from_raw(raw_profiles)
+        count = self.set_profiles_from_raw(raw_profiles)
+
+        # Mark profiles from Happ sources with badge H
+        if self._happ_source_seen:
+            with self._lock:
+                for p in self.profiles:
+                    p.extra["source"] = "happ"
+
+        return count
 
     def set_profiles_from_raw(self, raw_urls: List[str]) -> int:
         """Parse and set profiles from raw URLs"""

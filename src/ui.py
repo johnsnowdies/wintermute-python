@@ -306,13 +306,17 @@ class UI:
                     ping_style = "grey37"
 
                 prefix = "> " if is_current else "  "
-                protocol_char = "X" if p.extra.get("type") == "xhttp" else "S"
+                if p.extra.get("source") == "happ":
+                    protocol_char = "H"
+                    protocol_style = "bold purple"
+                else:
+                    protocol_char = "X" if p.extra.get("type") == "xhttp" else "S"
+                    protocol_style = "bold green" if protocol_char == "X" else "bold orange1"
 
                 if is_broken:
                     protocol_style = "grey37"
                     name_style = "grey37"
                 else:
-                    protocol_style = "bold green" if protocol_char == "X" else "bold orange1"
                     name_style = "bold white" if is_current else ""
 
                 # Calculate space for name
@@ -801,7 +805,7 @@ class UI:
             {"label": "Selection: Auto Switch", "val": c.selection.auto_switch, "type": bool, "obj": c.selection, "attr": "auto_switch"},
             {"label": "Selection: Switch Delay", "val": format_time_interval(c.selection.switch_delay), "type": "interval", "obj": c.selection, "attr": "switch_delay"},
             {"label": "Selection: Backup Count", "val": c.selection.backup_profiles_count, "type": int, "obj": c.selection, "attr": "backup_profiles_count"},
-            {"label": "Selection: Prefer Xray", "val": c.selection.prefer_xray, "type": bool, "obj": c.selection, "attr": "prefer_xray"},
+            {"label": "Selection: Engine", "val": c.selection.preferred_engine, "type": str, "obj": c.selection, "attr": "preferred_engine"},
         ]
 
     def toggle_config_edit(self, callback=None):
@@ -942,8 +946,12 @@ class UI:
             if is_broken:
                 ping_style = "grey37"
 
-            protocol_char = "X" if p.extra.get('type') == 'xhttp' else "S"
-            protocol_style = "bold green" if p.extra.get('type') == 'xhttp' else "bold orange3"
+            if p.extra.get("source") == "happ":
+                protocol_char = "H"
+                protocol_style = "bold purple"
+            else:
+                protocol_char = "X" if p.extra.get('type') == 'xhttp' else "S"
+                protocol_style = "bold green" if p.extra.get('type') == 'xhttp' else "bold orange3"
 
             if is_selected:
                 style = "bold white on blue"

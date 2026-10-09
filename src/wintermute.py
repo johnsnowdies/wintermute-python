@@ -498,7 +498,7 @@ class Wintermute:
             if self.config.testing.healthcheck_content_url
             and self.config.testing.healthcheck_content_md5
             else False,
-            prefer_xray=self.config.selection.prefer_xray,
+            prefer_xray=self.config.selection.preferred_engine == "xray",
             on_progress=self.ui.set_progress,
         )
 
@@ -837,11 +837,16 @@ class Wintermute:
             threading.Thread(target=run_retest_and_switch, daemon=True).start()
             return
 
-        # Pick best according to prefer_xray
+        # Pick best according to preferred_engine
         best = available[0]
-        if self.config.selection.prefer_xray:
+        if self.config.selection.preferred_engine == "xray":
             for p in available:
                 if p.extra.get("type") == "xhttp":
+                    best = p
+                    break
+        elif self.config.selection.preferred_engine == "singbox":
+            for p in available:
+                if p.extra.get("type") != "xhttp":
                     best = p
                     break
 
@@ -969,7 +974,7 @@ class Wintermute:
                             timeout=self.config.selection.test_timeout,
                             min_latency=self.config.selection.min_acceptable_latency,
                             test_real=self.config.selection.test_real_connection,
-                            prefer_xray=self.config.selection.prefer_xray,
+                            prefer_xray=self.config.selection.preferred_engine == "xray",
                             on_progress=self.ui.set_progress,
                         )
 

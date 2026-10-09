@@ -54,3 +54,4 @@ selection:
   auto_switch: true
   switch_delay: "10s"
   backup_profiles_count: 3
+  preferred_engine: "auto"    # "auto", "xray", "singbox"
