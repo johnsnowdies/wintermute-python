@@ -263,14 +263,44 @@ class ProfileLoader:
                     return cached
             return []
 
-        # ── Parse lines ──────────────────────────────────────────────────
+        # ── Parse lines (decrypt happ:// lines, pass through vless:// etc.) ──
         profiles: List[str] = []
         raw_lines = content.split("\n")
         for line in raw_lines:
             line = line.strip()
-            if line and not line.startswith("#"):
-                if not profile_filter or profile_filter in line:
-                    profiles.append(line)
+            if not line or line.startswith("#"):
+                continue
+            if profile_filter and profile_filter not in line:
+                continue
+
+            if line.startswith("happ://"):
+                # Decrypt Happ-encrypted profile line via hpwnr
+                self.logger.info(f"  Decrypting inline Happ URL: {line[:60]}…")
+                decrypted = self._decrypt_happ(line)
+                if decrypted:
+                    # decrypted might be a nested subscription URL or vless:// directly
+                    if decrypted.startswith("http://") or decrypted.startswith("https://"):
+                        self.logger.info(f"    ↳ nested URL, fetching …")
+                        nested = self._fetch_url(decrypted)
+                        if nested:
+                            # Try JSON conversion or use as-is
+                            converted = self._convert_json_to_uris(nested)
+                            final = converted or nested
+                            for subline in final.split("\n"):
+                                subline = subline.strip()
+                                if subline and not subline.startswith("#"):
+                                    profiles.append(subline)
+                    else:
+                        # vless:// URI(s) directly
+                        for subline in decrypted.split("\n"):
+                            subline = subline.strip()
+                            if subline:
+                                profiles.append(subline)
+                else:
+                    self.logger.warning(f"    hpwnr failed for {line[:60]}…")
+            else:
+                # Regular vless://, ss://, trojan:// etc.
+                profiles.append(line)
 
         self.logger.debug(f"   Profiles found: {len(profiles)}")
 
