@@ -99,7 +99,7 @@ class SelectionConfig:
     auto_switch: bool = True
     switch_delay: int = 10  # sec
     backup_profiles_count: int = 3
-    preferred_engine: str = "auto"  # "xray", "singbox", "auto"
+    preferred_engine: str = "auto"  # "auto", "xray", "singbox", "happ"
     max_test_profiles: int = 100
     test_timeout: int = 5
     test_real_connection: bool = False

@@ -498,7 +498,7 @@ class Wintermute:
             if self.config.testing.healthcheck_content_url
             and self.config.testing.healthcheck_content_md5
             else False,
-            prefer_xray=self.config.selection.preferred_engine == "xray",
+            preferred_engine=self.config.selection.preferred_engine,
             on_progress=self.ui.set_progress,
         )
 
@@ -535,17 +535,9 @@ class Wintermute:
             self.logger.error("setup_engine called without profile value")
             return False
 
-        # Decide which engine to use
-        # preferred_engine: "auto" → xhttp uses Xray, rest uses sing-box
-        #                   "xray"  → force Xray
-        #                   "singbox" → force sing-box
-        eng = self.config.selection.preferred_engine
-        if eng == "singbox":
-            use_xray = False
-        elif eng == "xray":
-            use_xray = True
-        else:
-            use_xray = profile.extra.get("type") == "xhttp"
+        # Engine is determined by the profile's transport type, not by
+        # preferred_engine (which is a profile-selection strategy only)
+        use_xray = profile.extra.get("type") == "xhttp"
         if not self.test_mode:
             self.ui.set_core_type("xray" if use_xray else "sing-box")
 
@@ -846,18 +838,10 @@ class Wintermute:
             threading.Thread(target=run_retest_and_switch, daemon=True).start()
             return
 
-        # Pick best according to preferred_engine
-        best = available[0]
-        if self.config.selection.preferred_engine == "xray":
-            for p in available:
-                if p.extra.get("type") == "xhttp":
-                    best = p
-                    break
-        elif self.config.selection.preferred_engine == "singbox":
-            for p in available:
-                if p.extra.get("type") != "xhttp":
-                    best = p
-                    break
+        # Pick best according to preferred_engine strategy
+        best = ProfileManager._pick_by_preferred_engine(
+            available, self.config.selection.preferred_engine
+        )
 
         with self.profile_manager._lock:
             self.profile_manager.selected_profile = best
@@ -983,7 +967,7 @@ class Wintermute:
                             timeout=self.config.selection.test_timeout,
                             min_latency=self.config.selection.min_acceptable_latency,
                             test_real=self.config.selection.test_real_connection,
-                            prefer_xray=self.config.selection.preferred_engine == "xray",
+                            preferred_engine=self.config.selection.preferred_engine,
                             on_progress=self.ui.set_progress,
                         )
 

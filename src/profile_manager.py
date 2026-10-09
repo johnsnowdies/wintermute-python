@@ -873,13 +873,40 @@ class ProfileManager:
         with self._lock:
             return profile.raw_url in self.broken_profiles
 
+    @staticmethod
+    def _pick_by_preferred_engine(
+        profiles: List[Profile], engine: str
+    ) -> Profile:
+        """
+        Pick the first profile matching the preferred_engine strategy.
+
+        * "auto"    → lowest latency (profiles[0] — already sorted)
+        * "xray"    → first xhttp profile, fallback to lowest latency
+        * "singbox" → first non-xhttp profile, fallback to lowest latency
+        * "happ"    → first Happ-sourced profile, fallback to lowest latency
+        """
+        if engine == "xray":
+            for p in profiles:
+                if p.extra.get("type") == "xhttp":
+                    return p
+        elif engine == "singbox":
+            for p in profiles:
+                if p.extra.get("type") != "xhttp":
+                    return p
+        elif engine == "happ":
+            for p in profiles:
+                if p.extra.get("source") == "happ":
+                    return p
+        # auto or fallback: already sorted by latency
+        return profiles[0]
+
     def test_and_select_best(
         self,
         max_test: int = 100,
         timeout: int = 1,
         min_latency: int = 500,
         test_real: bool = False,
-        prefer_xray: bool = False,
+        preferred_engine: str = "auto",
         on_progress: Optional[Callable[[int, int], None]] = None,
     ) -> Optional[Profile]:
         """
@@ -906,14 +933,8 @@ class ProfileManager:
             return None
 
         # self.working_profiles is already sorted by latency from ProfileTester.test_profiles
-        best = available_profiles[0]
-
-        if prefer_xray:
-            # Look for first xray-compatible profile (type=xhttp)
-            for p in available_profiles:
-                if p.extra.get("type") == "xhttp":
-                    best = p
-                    break
+        # Apply preferred_engine selection strategy on top of latency sort
+        best = ProfileManager._pick_by_preferred_engine(available_profiles, preferred_engine)
 
         if best.latency and best.latency <= min_latency:
             self.logger.info("Profile picked")
