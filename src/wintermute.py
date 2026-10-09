@@ -494,10 +494,7 @@ class Wintermute:
             max_test=self.config.testing.max_test,
             timeout=self.config.testing.timeout,
             min_latency=self.config.selection.min_acceptable_latency,
-            test_real=True
-            if self.config.testing.healthcheck_content_url
-            and self.config.testing.healthcheck_content_md5
-            else False,
+            test_real=self.config.selection.test_real_connection,
             preferred_engine=self.config.selection.preferred_engine,
             on_progress=self.ui.set_progress,
         )
