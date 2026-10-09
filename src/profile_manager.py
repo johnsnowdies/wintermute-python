@@ -428,6 +428,11 @@ class ProfileLoader:
 
         self.logger.debug(f"   Profiles found: {len(profiles)}")
 
+        # If the entire source is Happ-encrypted, mark all resulting URLs
+        if is_happ_source and _happ_out is not None:
+            for p in profiles:
+                _happ_out.add(p)
+
         # Save cache
         if self.cache and profiles:
             self.cache.save(url, profiles)
@@ -901,10 +906,20 @@ class ProfileManager:
         count = self.set_profiles_from_raw(raw_profiles)
 
         # Mark profiles that were decrypted from inline Happ links
+        # Compare by base URI (uuid@host:port) — raw_url strips query params
         if happ_raw_urls:
+            # Extract base URIs from full URIs for matching
+            happ_bases = set()
+            for u in happ_raw_urls:
+                # full: vless://uuid@host:port?params#comment
+                # base: vless://uuid@host:port
+                if u.startswith("vless://"):
+                    base = u[:u.index("?")] if "?" in u else u
+                    base = base.split("#")[0]
+                    happ_bases.add(base)
             with self._lock:
                 for p in self.profiles:
-                    if p.raw_url in happ_raw_urls:
+                    if p.raw_url in happ_bases:
                         p.extra["source"] = "happ"
 
         return count
