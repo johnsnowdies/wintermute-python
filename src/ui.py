@@ -306,36 +306,40 @@ class UI:
                     ping_style = "grey37"
 
                 prefix = "> " if is_current else "  "
-                if p.extra.get("source") == "happ":
-                    protocol_char = "H"
-                    protocol_style = "bold purple"
-                else:
-                    protocol_char = "X" if p.extra.get("type") == "xhttp" else "S"
-                    protocol_style = "bold green" if protocol_char == "X" else "bold orange1"
+                is_happ = p.extra.get("source") == "happ"
+                eng_char = "X" if p.extra.get("type") == "xhttp" else "S"
 
                 if is_broken:
-                    protocol_style = "grey37"
                     name_style = "grey37"
                 else:
                     name_style = "bold white" if is_current else ""
 
+                # Build badge (H→X / H→S for Happ, plain X/S otherwise)
+                badge = Text()
+                if is_happ:
+                    badge.append("H", style="grey37" if is_broken else "bold purple")
+                    eng_style = "grey37" if is_broken else ("bold green" if eng_char == "X" else "bold orange1")
+                    badge.append(f"→{eng_char}", style=eng_style)
+                else:
+                    eng_style = "grey37" if is_broken else ("bold green" if eng_char == "X" else "bold orange1")
+                    badge.append(eng_char, style=eng_style)
+                badge_width = badge.cell_len
+
                 # Calculate space for name
-                # available = status_width - cell_len(prefix) - 2 (prot + space) - cell_len(ping_str) - 1 (min space)
-                max_name_len = status_width - cell_len(prefix) - 2 - cell_len(ping_str) - 1
+                max_name_len = status_width - cell_len(prefix) - badge_width - 1 - cell_len(ping_str) - 1
                 if cell_len(name) > max_name_len:
-                    # Text.truncate uses cell length
                     t_name = Text(name)
                     t_name.truncate(max_name_len - 3)
                     name = t_name.plain + "..."
 
                 # Padding to right-align ping
-                padding_len = status_width - cell_len(prefix) - 2 - cell_len(name) - cell_len(ping_str)
+                padding_len = status_width - cell_len(prefix) - badge_width - 1 - cell_len(name) - cell_len(ping_str)
                 if padding_len < 1: padding_len = 1
                 padding = " " * padding_len
 
                 line = Text()
                 line.append(prefix, style="bold blink" if is_current else "")
-                line.append(protocol_char, style=protocol_style)
+                line.append(badge)
                 line.append(" ")
                 line.append(name, style=name_style)
                 line.append(padding)
@@ -946,12 +950,8 @@ class UI:
             if is_broken:
                 ping_style = "grey37"
 
-            if p.extra.get("source") == "happ":
-                protocol_char = "H"
-                protocol_style = "bold purple"
-            else:
-                protocol_char = "X" if p.extra.get('type') == 'xhttp' else "S"
-                protocol_style = "bold green" if p.extra.get('type') == 'xhttp' else "bold orange3"
+            is_happ = p.extra.get("source") == "happ"
+            eng_char = "X" if p.extra.get("type") == "xhttp" else "S"
 
             if is_selected:
                 style = "bold white on blue"
@@ -960,25 +960,30 @@ class UI:
                 style = "grey37" if is_broken else "white"
                 prefix = "  "
 
+            # Build badge (H→X / H→S for Happ, plain X/S otherwise)
+            badge = Text()
+            if is_happ:
+                h_style = "grey37" if is_broken else "bold purple"
+                eng_style = "grey37" if is_broken else ("bold green" if eng_char == "X" else "bold orange3")
+                if is_selected:
+                    h_style = eng_style = "bold white on blue"
+                badge.append("H", style=h_style)
+                badge.append(f"→{eng_char}", style=eng_style)
+            else:
+                eng_style = "grey37" if is_broken else ("bold green" if eng_char == "X" else "bold orange3")
+                if is_selected:
+                    eng_style = "bold white on blue"
+                badge.append(eng_char, style=eng_style)
+
             line = Text()
             line.append(prefix, style="bold blink" if (is_current and not is_selected) else "")
-
-            # Protocol char styling when broken or selected
-            p_style = protocol_style
-            if is_selected:
-                p_style = "bold white on blue"
-            elif is_broken:
-                p_style = "grey37"
-
-            line.append(protocol_char, style=p_style)
+            line.append(badge)
             line.append(" ")
             line.append(name, style=style)
 
             # Alignment
-            # Panel is centered or full width? _get_manual_panel is used in body
-            # body width is full console width
             panel_width = self.console.width - 4
-            current_len = cell_len(prefix) + cell_len(protocol_char) + 1 + cell_len(name)
+            current_len = cell_len(prefix) + badge.cell_len + 1 + cell_len(name)
             padding_len = panel_width - current_len - cell_len(ping_str) - 2
             if padding_len > 0:
                 line.append(" " * padding_len)
