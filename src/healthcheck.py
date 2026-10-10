@@ -3,6 +3,7 @@ Healthcheck — упрощён: только базовая проверка п�
 Вся логика content-md5, внешние колбеки — выпилены.
 """
 
+import random
 import threading
 import time
 from typing import Callable, List, Optional
@@ -11,6 +12,15 @@ import requests
 import urllib3
 
 from logger import get_logger
+
+
+# Браузерный User-Agent для healthcheck-запросов (против DPI по User-Agent)
+_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+
+
+def _jitter(base: float, spread: float = 0.2) -> float:
+    """base ± random % (default ±20%)"""
+    return base * (1 + random.uniform(-spread, spread))
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -71,8 +81,9 @@ class HealthChecker:
 
     def _check_loop(self):
         if self._first_check and self.initial_delay > 0:
-            self.logger.info(f"Waiting {self.initial_delay}s before first check...")
-            time.sleep(self.initial_delay)
+            delay = _jitter(self.initial_delay)
+            self.logger.info(f"Waiting {delay:.0f}s before first check (jittered)...")
+            time.sleep(delay)
             self._first_check = False
 
         while self._running:
@@ -96,13 +107,13 @@ class HealthChecker:
                             self.logger.error(f"Failure callback error: {e}")
             except Exception as e:
                 self.logger.error(f"HealthChecker error: {e}")
-            time.sleep(self.check_interval)
+            time.sleep(_jitter(self.check_interval))
 
     def _check_connection(self) -> bool:
         """Проверка: хотя бы один URL отвечает 200/204."""
         for url in self.check_urls:
             try:
-                resp = requests.get(url, timeout=self.timeout, verify=self.verify_tls)
+                resp = requests.get(url, timeout=self.timeout, verify=self.verify_tls, headers={"User-Agent": _UA})
                 if resp.status_code in (200, 204):
                     return True
             except Exception:

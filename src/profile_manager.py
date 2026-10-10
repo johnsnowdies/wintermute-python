@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import random
 import socket
 import subprocess
 import threading
@@ -15,6 +16,10 @@ import urllib3
 
 from logger import get_logger
 from utils import decode_b64_if_valid
+
+
+# Браузерный User-Agent для всех HTTP-запросов (против DPI по User-Agent)
+_BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
 
 
 # Disabling warnings about unverified certificates
@@ -327,7 +332,8 @@ class ProfileLoader:
             self.logger.error(f"  Redirect loop for {url}")
             return None
         try:
-            response = requests.get(url, timeout=10, verify=self.verify_tls, allow_redirects=False)
+            response = requests.get(url, timeout=10, verify=self.verify_tls, allow_redirects=False,
+                                    headers={"User-Agent": _BROWSER_UA})
 
             if response.is_redirect:
                 location = response.headers.get("Location", "")

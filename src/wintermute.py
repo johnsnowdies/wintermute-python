@@ -180,6 +180,10 @@ class Wintermute:
                 "fingerprint": extra.get("fp", "chrome"),
             }
 
+            # TLS-fragment: разбивает ClientHello на несколько пакетов
+            # — затрудняет DPI, анализирующий SNI в первом пакете
+            tls_config["tls_fragment"] = True
+
             if extra["security"] == "reality" and extra.get("pbk"):
                 tls_config["reality"] = {
                     "enabled": True,
@@ -258,6 +262,24 @@ class Wintermute:
                     {"protocol": "dns", "outbound": "proxy"},
                 ],
                 "final": "proxy",
+            },
+            "dns": {
+                "servers": [
+                    {
+                        "address": "https://1.1.1.1/dns-query",
+                        "address_resolver": "dns",
+                        "address_strategy": "ipv4_only",
+                        "client_subnet": "0.0.0.0/0",
+                    },
+                    {
+                        "address": "https://1.0.0.1/dns-query",
+                        "address_resolver": "dns",
+                        "address_strategy": "ipv4_only",
+                        "client_subnet": "0.0.0.0/0",
+                    },
+                ],
+                "strategy": "prefer_ipv4",
+                "independent_cache": True,
             },
         }
 
