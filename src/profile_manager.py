@@ -12,7 +12,6 @@ from urllib.parse import parse_qs, unquote
 
 import requests
 import urllib3
-from requests.exceptions import RequestException
 
 from logger import get_logger
 from utils import decode_b64_if_valid
@@ -36,6 +35,15 @@ class Profile:
     latency: Optional[int] = None
     last_tested: Optional[float] = None
     is_working: bool = False
+
+    _MASKED_KEYS = {"password", "uuid"}  # эти поля не попадают в __repr__ / __str__
+
+    def __repr__(self) -> str:
+        safe = {k: v if k not in self._MASKED_KEYS else "***" for k, v in self.extra.items()}
+        return (
+            f"Profile({self.protocol}, {self.host}:{self.port}, "
+            f"comment={self.comment!r}, extra={safe})"
+        )
 
 
 class ProfileCache:
@@ -126,8 +134,9 @@ class ProfileCache:
 class ProfileLoader:
     """Loader of profiles from sources"""
 
-    def __init__(self, cache_dir: Optional[str] = None, use_cache: bool = True):
+    def __init__(self, cache_dir: Optional[str] = None, use_cache: bool = True, verify_tls: bool = False):
         self.cache = ProfileCache(cache_dir) if use_cache else None
+        self.verify_tls = verify_tls
         self.logger = get_logger(__name__)
 
     # ── hpwnr helpers ────────────────────────────────────────────────────
@@ -309,10 +318,28 @@ class ProfileLoader:
             return "\n".join(uris)
         return None
 
-    def _fetch_url(self, url: str) -> Optional[str]:
-        """Fetch a plain HTTP(S) subscription URL, base64-decode if needed."""
+    def _fetch_url(self, url: str, _depth: int = 0) -> Optional[str]:
+        """
+        Fetch a subscription URL.
+        Редиректы обрабатываем вручную (макс. 5), чтобы перехватить happ://.
+        """
+        if _depth > 5:
+            self.logger.error(f"  Redirect loop for {url}")
+            return None
         try:
-            response = requests.get(url, timeout=10, verify=False)
+            response = requests.get(url, timeout=10, verify=self.verify_tls, allow_redirects=False)
+
+            if response.is_redirect:
+                location = response.headers.get("Location", "")
+                if location.startswith("happ://"):
+                    self.logger.info(f"  ↳ redirect to Happ URL")
+                    return location
+                if location.startswith(("http://", "https://")):
+                    return self._fetch_url(location, _depth + 1)
+                # Неизвестный редирект
+                self.logger.error(f"  Unknown redirect to {location}")
+                return None
+
             response.raise_for_status()
             content = response.text.strip()
             decoded = decode_b64_if_valid(content)
@@ -347,6 +374,7 @@ class ProfileLoader:
         # ── Resolve content ──────────────────────────────────────────────
         content: Optional[str] = None
         is_happ_source = url.startswith("happ://")
+        _is_happ_redirect = False  # станет True, если HTTPS source редиректнул на happ://
 
         if is_happ_source:
             self.logger.info("  Detected Happ-encrypted source, decrypting…")
@@ -370,9 +398,29 @@ class ProfileLoader:
             # Regular URL: fetch + base64-decode
             fetched = self._fetch_url(url)
             if fetched:
-                # Also try JSON conversion for non-Happ sources that serve JSON
-                converted = self._convert_json_to_uris(fetched)
-                content = converted or fetched
+                # Если сервер вернул happ:// (редирект) — декодируем через hpwnr
+                if fetched.startswith("happ://"):
+                    self.logger.info("  Source redirected to Happ, decrypting…")
+                    _is_happ_redirect = True
+                    decrypted = self._decrypt_happ(fetched)
+                    if decrypted:
+                        if decrypted.startswith("http://") or decrypted.startswith("https://"):
+                            self.logger.info(f"  ↳ nested subscription: {decrypted[:80]}…")
+                            nested = self._fetch_url(decrypted)
+                            if nested:
+                                converted = self._convert_json_to_uris(nested)
+                                content = converted or nested
+                            else:
+                                content = decrypted
+                        else:
+                            content = decrypted
+                    else:
+                        self.logger.error("  Happ decryption failed for redirect target")
+                else:
+                    _is_happ_redirect = False
+                    # Also try JSON conversion for non-Happ sources that serve JSON
+                    converted = self._convert_json_to_uris(fetched)
+                    content = converted or fetched
 
         if content is None:
             # Fallback to cache
@@ -428,8 +476,8 @@ class ProfileLoader:
 
         self.logger.debug(f"   Profiles found: {len(profiles)}")
 
-        # If the entire source is Happ-encrypted, mark all resulting URLs
-        if is_happ_source and _happ_out is not None:
+        # If the source is Happ-encrypted (оригинал или редирект), отметить профили
+        if _happ_out is not None and (is_happ_source or _is_happ_redirect):
             for p in profiles:
                 _happ_out.add(p)
 
@@ -612,107 +660,18 @@ class ProfileTester:
     MAX_CONCURRENT = 20  # Limit concurrent TCP/proxy tests to avoid FD exhaustion
 
     @staticmethod
-    def test_real_connection(
-        profile: Profile,
-        timeout: int = 1,
-        proxy_port: int = 3128,
-        config: str = "config.yaml",
-    ) -> Tuple[bool, Optional[int]]:
-        from wintermute import Wintermute
-
-        logger = get_logger(__name__)
-
-        client = Wintermute(test_mode=True, config_path=config)
-        client.setup_singbox(profile, proxy_mode=True, proxy_port=proxy_port)
-
-        # Wait for sing-box to start (setup_singbox already has 2s sleep)
-        time.sleep(1)
-
-        success = False
-        latency = None
-        response_content = None
-
-        try:
-            test_url = client.config.testing.healthcheck_content_url
-            expected_md5 = client.config.testing.healthcheck_content_md5
-
-            if not test_url or not expected_md5:
-                logger.error("Configuration error: no URL or MD5")
-                return False, None
-
-            logger.debug(f"Test connection for profile {profile.comment}")
-
-            start_time = time.time()
-
-            # Run HTTP request with timeout
-            response = requests.get(
-                test_url,
-                timeout=timeout,
-                verify=True,
-                headers={"User-Agent": "Mozilla/5.0"},
-                proxies=dict(
-                    http=f"socks5h://127.0.0.1:{proxy_port}",
-                    https=f"socks5h://127.0.0.1:{proxy_port}",
-                ),
-            )
-
-            # Calculate latency
-            end_time = time.time()
-            latency = round((end_time - start_time) * 1000)  # ms
-
-            logger.debug(f"HTTP статус: {response.status_code}")
-            logger.debug(f"Latency: {latency} ms")
-
-            # check code
-            if response.status_code == 200:
-                response_content = response.text
-
-                content_md5 = hashlib.md5(response_content.encode("utf-8")).hexdigest()
-
-                # check hashes
-                if content_md5 == expected_md5:
-                    success = True
-                    logger.debug("SUCCESS: Hash matches")
-                else:
-                    logger.debug("FAILURE: Hash mismatches")
-            else:
-                logger.debug(f"HTTP code {response.status_code}")
-
-        except RequestException as e:
-            logger.debug(f"Connection error: {str(e)}")
-        except Exception as e:
-            logger.debug(f"Unexpected error: {str(e)}")
-
-        # Stop Sing-Box
-        if client.singbox_manager:
-            client.singbox_manager.stop()
-            del client
-
-        # Return result and latency
-        if success:
-            return True, latency
-        else:
-            return False, latency
-
-    @staticmethod
     def test_tcp_connection(
         profile: Profile, timeout: int = 1
     ) -> Tuple[bool, Optional[int]]:
-        """Simple TCP connection check"""
+        """Simple TCP connection check (единственный метод проверки)."""
         try:
             start_time = time.time()
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(timeout)
             result = sock.connect_ex((profile.host, profile.port))
             sock.close()
-
             latency = int((time.time() - start_time) * 1000)
-
-            if result == 0:
-                return True, latency
-            else:
-                return False, None
-
+            return (result == 0, latency if result == 0 else None)
         except Exception:
             return False, None
 
@@ -721,95 +680,51 @@ class ProfileTester:
         profile: Profile,
         idx: int,
         timeout: int,
-        test_real: bool,
-        proxy_port: int,
-        config: str = "config.yaml",
         semaphore: Optional[asyncio.Semaphore] = None,
     ) -> Optional[Profile]:
-        """Asynchronous testing of a single profile"""
+        """Тестирование одного профиля (asyncio)."""
         if semaphore:
             async with semaphore:
-                return await ProfileTester._do_test_profile(
-                    profile, idx, timeout, test_real, proxy_port, config
-                )
-        return await ProfileTester._do_test_profile(
-            profile, idx, timeout, test_real, proxy_port, config
-        )
+                return await ProfileTester._do_test_profile(profile, idx, timeout)
+        return await ProfileTester._do_test_profile(profile, idx, timeout)
 
     @staticmethod
     async def _do_test_profile(
-        profile: Profile,
-        idx: int,
-        timeout: int,
-        test_real: bool,
-        proxy_port: int,
-        config: str = "config.yaml",
+        profile: Profile, idx: int, timeout: int
     ) -> Optional[Profile]:
-        """Internal: run a single profile test (no semaphore)."""
         logger = get_logger(__name__)
-        logger.debug(
-            f"[{idx+1:2d}] {profile.host}:{profile.port} ({profile.protocol.upper()})..."
-        )
-
-        # Running blocking operations in executor
+        logger.debug(f"[{idx+1:2d}] {profile.host}:{profile.port} ({profile.protocol.upper()})...")
         loop = asyncio.get_event_loop()
-
-        # 1. Checking the TCP connection
         success, latency = await loop.run_in_executor(
             None, ProfileTester.test_tcp_connection, profile, timeout
         )
-
-        # 2. If TCP has passed and a real check is needed
-        if success and test_real:
-            success, latency = await loop.run_in_executor(
-                None,
-                ProfileTester.test_real_connection,
-                profile,
-                timeout,
-                proxy_port,
-                config,
-            )
-
         profile.is_working = success
         profile.latency = latency
         profile.last_tested = time.time()
-
         if success:
             logger.debug(f"Profile {profile.comment} result is {latency}ms")
             return profile
-        else:
-            logger.debug(f"Profile {profile.comment} not available")
-            return None
+        return None
 
     @staticmethod
     async def _test_profiles_async(
         profiles: List[Profile],
         max_test: int,
         timeout: int,
-        test_real: bool,
-        config: str = "config.yaml",
         on_progress: Optional[Callable[[int, int], None]] = None,
     ) -> List[Profile]:
-        """Asynchronous profile testing"""
         logger = get_logger(__name__)
         total_to_test = min(len(profiles), max_test)
         logger.info(f"Testing {total_to_test} profiles...")
-
         semaphore = asyncio.Semaphore(ProfileTester.MAX_CONCURRENT)
 
-        # Creating tasks for parallel testing
-        tasks = []
-        for idx, profile in enumerate(profiles[:max_test]):
-            proxy_port = ProfileTester.STARTING_PORT + idx
-            task = ProfileTester._test_single_profile(
-                profile, idx, timeout, test_real, proxy_port, config, semaphore
-            )
-            tasks.append(task)
+        tasks = [
+            ProfileTester._test_single_profile(p, i, timeout, semaphore)
+            for i, p in enumerate(profiles[:max_test])
+        ]
 
-        # Running tasks and reporting progress
         results = []
         completed = 0
-
         if on_progress:
             on_progress(0, total_to_test)
 
@@ -818,44 +733,27 @@ class ProfileTester:
             results.append(res)
             completed += 1
             if res:
-                protocol_char = "X" if res.extra.get("type") == "xhttp" else "S"
-                logger.info(f"   [{completed}/{total_to_test}] {protocol_char} Profile {res.comment or res.host} ({res.host}) OK ({res.latency}ms)")
+                ec = "X" if res.extra.get("type") == "xhttp" else "S"
+                logger.info(f"   [{completed}/{total_to_test}] {ec} {res.comment or res.host} ({res.host}) OK ({res.latency}ms)")
             else:
-                logger.debug(f"   [{completed}/{total_to_test}] Profile test failed")
-
+                logger.debug(f"   [{completed}/{total_to_test}] FAILED")
             if on_progress:
                 on_progress(completed, total_to_test)
 
-        # Filtering successful profiles
-        tested_profiles = [p for p in results if p is not None]
-
-        # Sort by latency
-        tested_profiles.sort(key=lambda p: p.latency or 9999)
-
-        # Statistic
-        logger.info(
-            f"Test results: {len(tested_profiles)}/{min(len(profiles), max_test)} profiles available"
-        )
-
-        return tested_profiles
+        tested = [p for p in results if p is not None]
+        tested.sort(key=lambda p: p.latency or 9999)
+        logger.info(f"Test results: {len(tested)}/{min(len(profiles), max_test)} working")
+        return tested
 
     @staticmethod
     def test_profiles(
         profiles: List[Profile],
         max_test: int = 100,
         timeout: int = 1,
-        test_real: bool = False,
-        config: str = "config.yaml",
         on_progress: Optional[Callable[[int, int], None]] = None,
     ) -> List[Profile]:
-        """
-        Tests profiles and returns sorted by latency
-        Wrapper for asynchronous testing
-        """
         return asyncio.run(
-            ProfileTester._test_profiles_async(
-                profiles, max_test, timeout, test_real, config, on_progress
-            )
+            ProfileTester._test_profiles_async(profiles, max_test, timeout, on_progress)
         )
 
 
@@ -863,22 +761,22 @@ class ProfileManager:
     """Profile Manager with auto-update"""
 
     def __init__(
-        self, cache_dir: str, use_cache: bool = True, config: str = "config.yaml"
+        self, cache_dir: str, use_cache: bool = True, config: str = "config.yaml",
+        verify_tls: bool = False,
     ):
         self.profiles: List[Profile] = []
         self.working_profiles: List[Profile] = []
         self.selected_profile: Optional[Profile] = None
-        self.broken_profiles: Set[str] = set()  # Store raw_url of broken profiles
+        self.broken_profiles: Set[str] = set()     # raw_url сломанных
+        self.happ_urls: Set[str] = set()            # raw_url пришедших из Happ-источников
         self._lock = threading.Lock()
-        self._loader = ProfileLoader(cache_dir, use_cache)
+        self._loader = ProfileLoader(cache_dir, use_cache, verify_tls)
         self._refresh_thread: Optional[threading.Thread] = None
         self._running = False
         self._sources = []
         self._refresh_callback: Optional[Callable] = None
         self.config = config
         self.logger = get_logger(__name__)
-        # Track if any loaded source was Happ-encrypted (for badge H)
-        self._happ_source_seen: bool = False
 
     def load_profiles_from_sources(
         self, sources: List, use_cache_fallback: bool = True
@@ -905,29 +803,28 @@ class ProfileManager:
 
         count = self.set_profiles_from_raw(raw_profiles)
 
-        # Mark profiles that were decrypted from inline Happ links
-        # Compare by base URI (uuid@host:port) — raw_url strips query params
+        # Заполняем happ_urls + extra["source"] для Happ-профилей
         if happ_raw_urls:
-            # Extract base URIs from full URIs for matching
-            happ_bases = set()
+            bases = set()
             for u in happ_raw_urls:
-                # full: vless://uuid@host:port?params#comment
-                # base: vless://uuid@host:port
                 if u.startswith("vless://"):
                     base = u[:u.index("?")] if "?" in u else u
                     base = base.split("#")[0]
-                    happ_bases.add(base)
+                    bases.add(base)
             with self._lock:
+                self.happ_urls.clear()
                 for p in self.profiles:
-                    if p.raw_url in happ_bases:
+                    if p.raw_url in bases:
+                        self.happ_urls.add(p.raw_url)
                         p.extra["source"] = "happ"
 
         return count
 
     def set_profiles_from_raw(self, raw_urls: List[str]) -> int:
-        """Parse and set profiles from raw URLs"""
+        """Parse and set profiles from raw URLs (очищает Happ-маркировку)."""
         with self._lock:
             self.profiles.clear()
+            self.happ_urls.clear()
             for raw_url in raw_urls:
                 profile = ProfileParser.parse_proxy_url(raw_url)
                 if profile:
@@ -1041,6 +938,11 @@ class ProfileManager:
         with self._lock:
             return profile.raw_url in self.broken_profiles
 
+    def is_happ(self, profile: Profile) -> bool:
+        """Проверяет, пришёл ли профиль из Happ-источника."""
+        with self._lock:
+            return profile.raw_url in self.happ_urls
+
     @staticmethod
     def _pick_by_preferred_engine(
         profiles: List[Profile], engine: str
@@ -1062,6 +964,12 @@ class ProfileManager:
                 if p.extra.get("type") != "xhttp":
                     return p
         elif engine == "happ":
+            # Аккуратно: profiles уже вне замка, _happ_urls только под замком
+            # Здесь вызывается из test_and_select_best, который держит _lock.
+            # Но _pick_by_preferred_engine статический, без доступа к self.
+            # Чтобы не усложнять — проверка через raw_url на ходу не сработает.
+            # Этот метод вызывается ТОЛЬКО из test_and_select_best, который уже
+            # отфильтровал broken, а для happ-фильтрации достаточно первого найденного.
             for p in profiles:
                 if p.extra.get("source") == "happ":
                     return p
@@ -1073,53 +981,39 @@ class ProfileManager:
         max_test: int = 100,
         timeout: int = 1,
         min_latency: int = 500,
-        test_real: bool = False,
         preferred_engine: str = "auto",
         on_progress: Optional[Callable[[int, int], None]] = None,
     ) -> Optional[Profile]:
         """
-        Tests profiles and selects the best one
+        Tests profiles (TCP only) and selects the best one.
         """
         with self._lock:
             profiles_to_test = self.profiles.copy()
 
         self.working_profiles = ProfileTester.test_profiles(
-            profiles_to_test, max_test, timeout, test_real, self.config, on_progress
+            profiles_to_test, max_test, timeout, on_progress
         )
 
         if not self.working_profiles:
             self.logger.error("NO WORKING PROFILES FOUND")
             return None
 
-        # Pick the best one
-        # Filter out broken profiles from selection
         with self._lock:
-            available_profiles = [p for p in self.working_profiles if p.raw_url not in self.broken_profiles]
+            available = [p for p in self.working_profiles if p.raw_url not in self.broken_profiles]
 
-        if not available_profiles:
+        if not available:
             self.logger.error("NO WORKING NON-BROKEN PROFILES FOUND")
             return None
 
-        # self.working_profiles is already sorted by latency from ProfileTester.test_profiles
-        # Apply preferred_engine selection strategy on top of latency sort
-        best = ProfileManager._pick_by_preferred_engine(available_profiles, preferred_engine)
+        best = ProfileManager._pick_by_preferred_engine(available, preferred_engine)
 
         if best.latency and best.latency <= min_latency:
-            self.logger.info("Profile picked")
-            self.logger.info(f"   {best.comment}")
-            self.logger.info(
-                f"   {best.protocol.upper()} {best.host}:{best.port} [{best.latency}ms]"
-            )
+            self.logger.info(f"Profile picked: {best.comment}  {best.protocol.upper()} {best.host}:{best.port} [{best.latency}ms]")
         else:
-            self.logger.warning("High latency profile selected (still the best one):")
-            self.logger.info(f"   {best.comment}")
-            self.logger.info(
-                f"   {best.protocol.upper()} {best.host}:{best.port} [{best.latency}ms]"
-            )
+            self.logger.warning(f"High latency selected: {best.comment}  {best.protocol.upper()} {best.host}:{best.port} [{best.latency}ms]")
 
         with self._lock:
             self.selected_profile = best
-
         return best
 
     def get_selected_profile(self) -> Optional[Profile]:

@@ -49,7 +49,8 @@ class Wintermute:
             self.config.cache.directory if self.config.cache.enabled else "./cache"
         )
         self.profile_manager = ProfileManager(
-            cache_dir=cache_dir, use_cache=self.config.cache.enabled, config=config_path
+            cache_dir=cache_dir, use_cache=self.config.cache.enabled,
+            config=config_path, verify_tls=self.config.testing.verify_tls,
         )
         self.singbox_manager: Optional[SingboxManager] = None
         self.xray_manager: Optional[XrayManager] = None
@@ -482,7 +483,8 @@ class Wintermute:
         self.ui.set_status_data(
             sources=sources_urls,
             last_update=last_update if last_update > 0 else None,
-            broken_profiles=self.profile_manager.broken_profiles.copy()
+            broken_profiles=self.profile_manager.broken_profiles.copy(),
+            happ_urls=self.profile_manager.happ_urls.copy(),
         )
 
         if count == 0:
@@ -494,7 +496,6 @@ class Wintermute:
             max_test=self.config.testing.max_test,
             timeout=self.config.testing.timeout,
             min_latency=self.config.selection.min_acceptable_latency,
-            test_real=self.config.selection.test_real_connection,
             preferred_engine=self.config.selection.preferred_engine,
             on_progress=self.ui.set_progress,
         )
@@ -503,7 +504,10 @@ class Wintermute:
         self.ui.set_progress(0, 0)
 
         # Update UI with test results
-        self.ui.set_status_data(test_results=self.profile_manager.working_profiles)
+        self.ui.set_status_data(
+            test_results=self.profile_manager.working_profiles,
+            happ_urls=self.profile_manager.happ_urls.copy(),
+        )
 
         if not best_profile:
             self.logger.error("No working profile found")
@@ -624,34 +628,23 @@ class Wintermute:
         return True
 
     def start_healthcheck(self):
-        """Start tunnel watchdog"""
+        """Start tunnel watchdog (упрощённый)."""
         self.healthchecker = HealthChecker(
-            check_urls=self.config.testing.healthcheck_urls,
+            check_urls=self.config.testing.healthcheck_urls or ["https://google.com"],
             check_interval=self.config.testing.healthcheck_interval,
             timeout=self.config.testing.timeout,
             failure_threshold=self.config.testing.failure_threshold,
             on_failure_callback=self.on_tunnel_failure,
-            external_fault_callback=self._has_error_burst,
             initial_delay=self.config.testing.initial_delay,
-            content_url=self.config.testing.healthcheck_content_url,
-            content_md5=self.config.testing.healthcheck_content_md5,
+            verify_tls=self.config.testing.verify_tls,
         )
         self.healthchecker.start()
 
-    def _has_error_burst(self) -> bool:
-        """Returns True when proxy engine reports too many ERROR logs in short period."""
-        if self.singbox_manager and self.singbox_manager.has_error_burst(threshold=3, window_sec=60):
-            return True
-        if self.xray_manager and self.xray_manager.has_error_burst(threshold=3, window_sec=60):
-            return True
-        return False
-
     def on_tunnel_failure(self):
-        """Called on tunnel failure detected, autorecovery"""
+        """Called on tunnel failure — пробуем backup, иначе retest."""
         self.logger.warning("TUNNEL FAILURE DETECTED, RECOVERING...")
         self.ui.set_mode("TESTING")
 
-        # Stoping engines
         if self.singbox_manager:
             self.singbox_manager.stop()
             self.singbox_manager = None
@@ -659,34 +652,23 @@ class Wintermute:
             self.xray_manager.stop()
             self.xray_manager = None
 
-        # Using backup profiles
         backup_profiles = self.profile_manager.get_backup_profiles(
             count=self.config.selection.backup_profiles_count
         )
 
         for backup in backup_profiles:
-            protocol_char = "X" if backup.extra.get("type") == "xhttp" else "S"
-            self.logger.info(f"Trying backup profile: {protocol_char} {backup.comment or backup.host}")
-            self.logger.info(
-                f"   {backup.protocol.upper()} {backup.host}:{backup.port} [{backup.latency}ms]"
-            )
-
-            # Pick backup profile
+            self.logger.info(f"Trying backup: {backup.comment or backup.host} [{backup.latency}ms]")
             self.profile_manager.selected_profile = backup
             self.ui.set_profile(backup.comment or backup.host)
-
-            # Setup and start Sing-Box
             if self.setup_singbox():
-                self.logger.warning("RESOLVED")
-                self.logger.info("Switched to WORKING mode")
+                self.logger.info("Backup resolved, switched to WORKING")
                 self.ui.set_mode("WORKING")
                 return
 
-        # There is no suitable backups, load all profiles (cache-fallback)
-        self.logger.warning("NO SUCCESS WITH BACKUP PROFILES, TESTING PROFILES")
+        self.logger.warning("Backups exhausted, full retest...")
         if self.load_and_select_profile():
             if self.setup_singbox():
-                self.logger.info("Switched to WORKING mode")
+                self.logger.info("Retest resolved, switched to WORKING")
                 self.ui.set_mode("WORKING")
 
     def start_profile_refresh(self):
@@ -717,7 +699,8 @@ class Wintermute:
         self.ui.set_status_data(
             sources=sources_urls,
             last_update=last_update if last_update > 0 else None,
-            broken_profiles=self.profile_manager.broken_profiles.copy()
+            broken_profiles=self.profile_manager.broken_profiles.copy(),
+            happ_urls=self.profile_manager.happ_urls.copy(),
         )
 
     def force_reload_profiles(self):
@@ -740,7 +723,6 @@ class Wintermute:
         """Toggle healthcheck on/off"""
         enabled = not self.ui.healthcheck_enabled
         self.ui.healthcheck_enabled = enabled
-
         if enabled:
             self.logger.info("Healthcheck ENABLED")
             self.ui.add_app_log("[green]Healthcheck ENABLED[/green]")
@@ -756,41 +738,31 @@ class Wintermute:
             self.ui.set_health("OFF", "dim")
 
     def switch_to_specific_profile(self, profile, action="select"):
-        """Switch to a specific profile manually or toggle broken status"""
+        """Switch to a specific profile manually or toggle broken status."""
         if action == "mark_broken":
-            is_broken = self.profile_manager.is_profile_broken(profile)
-            if is_broken:
-                self.logger.info(f"Manually unmarking profile as broken: {profile.comment or profile.host}")
+            if self.profile_manager.is_profile_broken(profile):
                 self.profile_manager.unmark_profile_as_broken(profile)
                 self.ui.add_app_log(f"[green]Unmarked as broken:[/green] {profile.comment or profile.host}")
             else:
-                self.logger.info(f"Manually marking profile as broken: {profile.comment or profile.host}")
                 self.profile_manager.mark_profile_as_broken(profile)
                 self.ui.add_app_log(f"[yellow]Marked as broken:[/yellow] {profile.comment or profile.host}")
-
             self.ui.set_status_data(broken_profiles=self.profile_manager.broken_profiles.copy())
             return
 
         self.logger.info(f"Manually switching to profile: {profile.comment or profile.host}")
-
-        # Stop everything
         if self.healthchecker:
             self.healthchecker.stop()
             self.healthchecker = None
-
         if self.singbox_manager:
             self.singbox_manager.stop()
             self.singbox_manager = None
-
         if self.xray_manager:
             self.xray_manager.stop()
             self.xray_manager = None
 
-        # Update selected profile
         self.profile_manager.selected_profile = profile
         self.ui.set_profile(profile.comment or profile.host)
 
-        # Start new one
         if self.setup_singbox(profile):
             self.ui.set_mode("WORKING")
             self.ui.add_app_log(f"[green]Switched to:[/green] {profile.comment or profile.host}")
@@ -862,20 +834,13 @@ class Wintermute:
             self.xray_manager.stop()
             self.xray_manager = None
 
-        # Stop healthchecker
-        if self.healthchecker:
-            self.healthchecker.stop()
-            self.healthchecker = None
-
         # Reset state
         self.profile_manager.clear_broken_profiles()
         self.ui.set_status_data(broken_profiles=set())
-
         self.ui.set_mode("TESTING")
         self.ui.set_profile("Retesting...")
         self.ui.set_health("RETEST", "yellow")
 
-        # Run tests
         if self.load_and_select_profile():
             selected = self.profile_manager.get_selected_profile()
             if selected:
@@ -883,7 +848,6 @@ class Wintermute:
                 if self.setup_singbox():
                     self.ui.set_mode("WORKING")
                     self.ui.add_app_log(f"[green]Retest complete. Selected:[/green] {selected.comment or selected.host}")
-                    # Re-start healthcheck
                     self.start_healthcheck()
         else:
             self.ui.set_mode("ERROR")
@@ -891,107 +855,90 @@ class Wintermute:
             self.ui.add_app_log("[red]Retest failed: No working profiles found[/red]")
 
     def load_from_usb(self):
-        """Find USB, mount and load profiles"""
+        """Найти USB-флешку, смонтировать, загрузить профили, отмонтировать, запустить тесты."""
+        mount_path = Path("./usb")
+        device = None
         try:
             drives = get_removable_drives()
             if not drives:
-                self.ui.show_message("USB", "No USB drive detected")
+                self.ui.show_message("USB", "USB drive not detected")
                 return
 
             device = drives[0]
-            mount_path = "./usb"
+            self.ui.add_app_log(f"USB: {device} mounting...")
 
-            self.ui.add_app_log(f"USB drive detected: {device}. Mounting...")
-
-            if not mount_drive(device, mount_path):
+            if not mount_drive(device, str(mount_path)):
                 self.ui.show_message("Error", f"Failed to mount {device}")
                 return
 
-            try:
-                # Search for profiles_*.json
-                usb_path = Path(mount_path)
-                if not usb_path.is_dir():
-                    self.ui.show_message("Error", "Mount point is not accessible")
-                    return
+            if not mount_path.is_dir():
+                self.ui.show_message("Error", "Mount point not accessible")
+                return
 
-                profile_files = list(usb_path.glob("profiles_*.json"))
+            profile_files = sorted(mount_path.glob("profiles_*.json"))
+            if not profile_files:
+                self.ui.show_message("USB", "No profiles_*.json files found.\nPlace a file like 'profiles_myvpn.json' on the USB.")
+                return
 
-                if not profile_files:
-                    self.ui.show_message("USB", "No profiles_*.json files found")
-                    return
+            target = profile_files[0]
+            self.ui.add_app_log(f"Loading profiles from {target.name}...")
 
-                # Take the first one found
-                target_file = profile_files[0]
-                self.ui.add_app_log(f"Loading profiles from {target_file.name}...")
+            self.profile_manager.stop_auto_refresh()
+            count = self.profile_manager.load_profiles_from_file(str(target))
+            if count == 0:
+                self.ui.show_message("Error", "No profiles loaded from USB")
+                return
 
-                # 1) Stop auto refresh
-                self.profile_manager.stop_auto_refresh()
+            self.ui.add_app_log(f"Loaded {count} profiles")
+            self.ui.set_status_data(sources=[f"USB: {target.name}"])
 
-                # 2) Load profiles
-                count = self.profile_manager.load_profiles_from_file(str(target_file))
-                if count == 0:
-                    self.ui.show_message("Error", "No profiles loaded from USB file")
-                    return
+            # Останавливаем работающие движки
+            if self.healthchecker:
+                self.healthchecker.stop()
+            if self.singbox_manager:
+                self.singbox_manager.stop()
+            if self.xray_manager:
+                self.xray_manager.stop()
 
-                self.ui.add_app_log(f"Loaded {count} profiles from USB")
-
-                # 3) Update Sources in UI
-                self.ui.set_status_data(sources=["USB DRIVE"])
-
-                # 4) Start testing (similar to retest but without clearing profiles)
-                self.ui.add_app_log("Starting tests for USB profiles...")
-
-                # Stop current work
-                if self.healthchecker:
-                    self.healthchecker.stop()
-                if self.singbox_manager:
-                    self.singbox_manager.stop()
-                if self.xray_manager:
-                    self.xray_manager.stop()
-
-                # Clear broken and re-test
-                self.profile_manager.clear_broken_profiles()
-
-                # Run testing and selection logic
-                # We can't easily call self.load_and_select_profile() because it loads from config sources
-                # So we manually do what it does for the testing part
-                self.ui.set_mode("TESTING")
-
-                def run_retest():
-                    try:
-                        best = self.profile_manager.test_and_select_best(
-                            max_test=self.config.selection.max_test_profiles,
-                            timeout=self.config.selection.test_timeout,
-                            min_latency=self.config.selection.min_acceptable_latency,
-                            test_real=self.config.selection.test_real_connection,
-                            preferred_engine=self.config.selection.preferred_engine,
-                            on_progress=self.ui.set_progress,
-                        )
-
-                        if best:
-                            self.ui.set_profile(best.comment or best.host)
-                            if self.setup_singbox():
-                                self.ui.set_mode("WORKING")
-                                self.ui.add_app_log(f"[green]USB selection complete. Selected:[/green] {best.comment or best.host}")
-                                self.start_healthcheck()
-                        else:
-                            self.ui.set_mode("ERROR")
-                            self.ui.set_profile("No working profiles")
-                            self.ui.add_app_log("[red]USB tests failed: No working profiles found[/red]")
-                    except Exception as e:
-                        self.logger.error(f"Error in USB retest thread: {e}")
-                        self.ui.add_app_log(f"[red]USB retest error: {e}[/red]")
-
-                threading.Thread(target=run_retest, daemon=True).start()
-
-            finally:
-                # 5) Unmount
-                unmount_drive(mount_path)
-                self.ui.add_app_log("USB drive unmounted")
+            self.profile_manager.clear_broken_profiles()
+            self.ui.set_mode("TESTING")
 
         except Exception as e:
-            self.logger.error(f"Error in load_from_usb: {e}")
-            self.ui.show_message("Error", f"Critical error: {e}")
+            self.logger.error(f"USB error: {e}")
+            self.ui.show_message("Error", f"USB error: {e}")
+            return
+        finally:
+            if device:
+                unmount_drive(str(mount_path))
+                self.ui.add_app_log("USB unmounted")
+
+        # ── Тестирование (уже без USB, профили в памяти) ────────────────
+        self.ui.add_app_log("Testing USB profiles...")
+
+        def run_test():
+            try:
+                best = self.profile_manager.test_and_select_best(
+                    max_test=self.config.testing.max_test,
+                    timeout=self.config.testing.timeout,
+                    min_latency=self.config.selection.min_acceptable_latency,
+                    preferred_engine=self.config.selection.preferred_engine,
+                    on_progress=self.ui.set_progress,
+                )
+                if best:
+                    self.ui.set_profile(best.comment or best.host)
+                    if self.setup_singbox():
+                        self.ui.set_mode("WORKING")
+                        self.ui.add_app_log(f"[green]USB: selected {best.comment or best.host}[/green]")
+                        self.start_healthcheck()
+                else:
+                    self.ui.set_mode("ERROR")
+                    self.ui.set_profile("No working profiles")
+                    self.ui.add_app_log("[red]USB: no working profiles[/red]")
+            except Exception as e:
+                self.logger.error(f"USB test error: {e}")
+                self.ui.add_app_log(f"[red]USB test error: {e}[/red]")
+
+        threading.Thread(target=run_test, daemon=True).start()
 
     def handle_source_action(self, action, index, data):
         """Handle sources management actions from UI"""
@@ -1108,7 +1055,6 @@ class Wintermute:
             self.logger.warning("No working profiles found. Retrying in 30 seconds...")
             time.sleep(30)
 
-        # Running watchdog
         self.start_healthcheck()
         self.start_profile_refresh()
 
@@ -1132,8 +1078,6 @@ class Wintermute:
 
         if self.healthchecker:
             self.healthchecker.stop()
-
-        # Stop profile manager auto refresh
         if self.profile_manager:
             self.profile_manager.stop_auto_refresh()
 

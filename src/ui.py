@@ -80,6 +80,7 @@ class UI:
         self.show_help = False
         self.hotkeys = {}
         self.broken_profiles = set()
+        self.happ_urls = set()
         self.show_manual = False
         self.selected_profile_index = 0
         self.manual_callback = None
@@ -306,7 +307,7 @@ class UI:
                     ping_style = "grey37"
 
                 prefix = "> " if is_current else "  "
-                is_happ = p.extra.get("source") == "happ"
+                is_happ = p.raw_url in self.happ_urls
                 eng_char = "X" if p.extra.get("type") == "xhttp" else "S"
 
                 if is_broken:
@@ -378,11 +379,10 @@ class UI:
                 self.main_layout["left"]["core"].update(self._get_panel(self.core_logs, "Core (Sing-box/Xray) Logs"))
                 self.main_layout["status"].update(self._get_status_panel())
 
-    def set_status_data(self, sources=None, last_update=None, test_results=None, broken_profiles=None):
+    def set_status_data(self, sources=None, last_update=None, test_results=None, broken_profiles=None, happ_urls=None):
         with self.lock:
             if sources is not None:
                 self.sources = [self._clean_name(s) for s in sources]
-                # Ensure selected source index is within bounds
                 total_sources = len(self.config.sources)
                 if self.selected_source_index >= total_sources:
                     self.selected_source_index = max(0, total_sources - 1)
@@ -392,6 +392,8 @@ class UI:
                 self.test_results = test_results
             if broken_profiles is not None:
                 self.broken_profiles = broken_profiles
+            if happ_urls is not None:
+                self.happ_urls = set(happ_urls)
         if self.live:
             self.update_render()
 
@@ -796,8 +798,6 @@ class UI:
             {"label": "Network: IPv4 Forward", "val": c.network.ipv4_forward, "type": bool, "obj": c.network, "attr": "ipv4_forward"},
 
             {"label": "Testing: Healthcheck URLs", "val": ", ".join(c.testing.healthcheck_urls), "type": list, "obj": c.testing, "attr": "healthcheck_urls"},
-            {"label": "Testing: Content URL", "val": c.testing.healthcheck_content_url or "", "type": str, "obj": c.testing, "attr": "healthcheck_content_url"},
-            {"label": "Testing: Content MD5", "val": c.testing.healthcheck_content_md5 or "", "type": str, "obj": c.testing, "attr": "healthcheck_content_md5"},
             {"label": "Testing: Timeout", "val": c.testing.timeout, "type": int, "obj": c.testing, "attr": "timeout"},
             {"label": "Testing: Health Interval", "val": format_time_interval(c.testing.healthcheck_interval), "type": "interval", "obj": c.testing, "attr": "healthcheck_interval"},
             {"label": "Testing: Failure Threshold", "val": c.testing.failure_threshold, "type": int, "obj": c.testing, "attr": "failure_threshold"},
@@ -950,7 +950,7 @@ class UI:
             if is_broken:
                 ping_style = "grey37"
 
-            is_happ = p.extra.get("source") == "happ"
+            is_happ = p.raw_url in self.happ_urls
             eng_char = "X" if p.extra.get("type") == "xhttp" else "S"
 
             if is_selected:

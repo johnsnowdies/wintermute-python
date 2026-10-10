@@ -1,167 +1,121 @@
-from collections import deque
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
-from typing import Deque, Optional, Any
+from typing import Optional, Any
 
 from logger import get_logger
 
 
-class SingboxManager:
-    """Sing-Box process manager class"""
+class BaseEngineManager:
+    """Базовый класс для управления процессом прокси-движка (sing-box / xray)."""
 
-    def __init__(self, singbox_path: str, config_path: Path, ui: Optional[Any] = None, log_file: Optional[str] = None, quiet: bool = False):
+    def __init__(self, engine_path: str, config_path: Path, label: str = "engine",
+                 ui: Optional[Any] = None, log_file: Optional[str] = None, quiet: bool = False):
         self.logger = get_logger(__name__)
-        self.singbox_path = singbox_path
+        self.engine_path = engine_path
         self.config_path = config_path
+        self.label = label
         self.ui = ui
         self.log_file = log_file
         self.quiet = quiet
         self.process: Optional[subprocess.Popen] = None
         self._running = False
         self._log_thread: Optional[threading.Thread] = None
-        self._error_timestamps: Deque[float] = deque()
-        self._error_lock = threading.Lock()
-
-    def _cleanup_error_events(self, now: Optional[float] = None, window_sec: int = 60):
-        """Drop ERROR events outside the rolling window."""
-        if now is None:
-            now = time.time()
-        threshold = now - window_sec
-        while self._error_timestamps and self._error_timestamps[0] < threshold:
-            self._error_timestamps.popleft()
-
-    def _register_error_event(self):
-        """Register sing-box ERROR line in stdout log stream."""
-        now = time.time()
-        with self._error_lock:
-            self._error_timestamps.append(now)
-            self._cleanup_error_events(now=now)
-
-    def _log_reader(self):
-        """Read and out Sing-Box STDOUT logs"""
-        if not self.process or not self.process.stdout:
-            return
-
-        log_f = None
-        if self.log_file:
-            try:
-                log_f = open(self.log_file, "a", encoding="utf-8")
-            except Exception as e:
-                self.logger.error(f"Failed to open sing-box log file {self.log_file}: {e}")
-
-        try:
-            for line in iter(self.process.stdout.readline, ""):
-                if not line:
-                    break
-
-                stripped_line = line.rstrip()
-                if self.ui:
-                    self.ui.add_core_log(f"[sing-box] {stripped_line}")
-                else:
-                    print(f"[sing-box] {stripped_line}")
-                    sys.stdout.flush()
-
-                if log_f:
-                    log_f.write(line)
-                    log_f.flush()
-
-                if "ERROR" in line.upper():
-                    self._register_error_event()
-        except Exception as e:
-            self.logger.error(f"Sing-box log reading error: {e}")
-        finally:
-            if log_f:
-                log_f.close()
 
     def start(self):
-        """Launching Sing-Box"""
+        """Запуск процесса движка."""
         if self._running and self.process:
-            self.logger.warning("SingboxManager start failed: already running")
+            self.logger.warning(f"{self.label}: already running")
             return False
-
-        self.logger.debug(f"Running Sing-Box with config: {self.config_path}")
-
+        self.logger.debug(f"{self.label}: starting with config {self.config_path}")
         try:
-            with self._error_lock:
-                self._error_timestamps.clear()
-
-            stdout_cfg = subprocess.DEVNULL if self.quiet else subprocess.PIPE
-            stderr_cfg = subprocess.STDOUT if not self.quiet else subprocess.DEVNULL
-
             self.process = subprocess.Popen(
-                [self.singbox_path, "run", "-c", str(self.config_path)],
-                stdout=stdout_cfg,
-                stderr=stderr_cfg,
-                text=True,
-                bufsize=1,
-                universal_newlines=True,
+                [self.engine_path, "run", "-c", str(self.config_path)],
+                stdout=subprocess.PIPE if not self.quiet else subprocess.DEVNULL,
+                stderr=subprocess.STDOUT if not self.quiet else subprocess.DEVNULL,
+                text=True, bufsize=1, universal_newlines=True,
             )
             self._running = True
 
             if not self.quiet:
-                # Launching log-reader thread
                 self._log_thread = threading.Thread(target=self._log_reader, daemon=True)
                 self._log_thread.start()
 
-            # Check process is running
             if self.process.poll() is not None:
-                self.logger.error("Sing-box startup failure")
-                # Reading error from STDOUT
+                self.logger.error(f"{self.label}: startup failure")
                 if self.process.stdout:
-                    output = self.process.stdout.read()
-                    if output:
-                        self.logger.error(f"STDOUT:\n{output}")
+                    out = self.process.stdout.read()
+                    if out:
+                        self.logger.error(f"STDOUT:\n{out}")
                 return False
-
-            self.logger.debug("SingboxManager start OK")
+            self.logger.debug(f"{self.label}: start OK")
             return True
-
         except Exception as e:
-            self.logger.error(f"Sing-Box Startup error: {e}")
+            self.logger.error(f"{self.label}: startup error: {e}")
             return False
 
     def stop(self):
-        """Stoping Sing-Box process"""
         if not self._running or not self.process:
             return
-
-        self.logger.debug("Stopping Sing-Box")
-
+        self.logger.debug(f"{self.label}: stopping")
         try:
             self.process.terminate()
             self.process.wait(timeout=5)
         except subprocess.TimeoutExpired:
             self.process.kill()
             self.process.wait()
-
         self._running = False
         self.process = None
-        with self._error_lock:
-            self._error_timestamps.clear()
-        self.logger.debug("Sing-Box successfully terminated")
+        self.logger.debug(f"{self.label}: terminated")
 
     def restart(self):
-        """Restart Sing-Box process"""
-        self.logger.debug("Restarting sing-box")
         self.stop()
         time.sleep(1)
         return self.start()
 
     def is_running(self) -> bool:
-        """Check Sing-Box is running"""
-        if not self.process:
-            return False
-        return self.process.poll() is None
+        return self.process is not None and self.process.poll() is None
 
-    def get_error_count(self, window_sec: int = 60) -> int:
-        """Returns count of stdout ERROR messages in the rolling window."""
-        with self._error_lock:
-            self._cleanup_error_events(window_sec=window_sec)
-            return len(self._error_timestamps)
+    def _log_reader(self):
+        if not self.process or not self.process.stdout:
+            return
+        log_f = None
+        if self.log_file:
+            try:
+                log_f = open(self.log_file, "a", encoding="utf-8")
+            except Exception as e:
+                self.logger.error(f"{self.label}: log file error {e}")
+        try:
+            for line in iter(self.process.stdout.readline, ""):
+                if not line:
+                    break
+                stripped = line.rstrip()
+                if self.ui:
+                    self.ui.add_core_log(f"[{self.label}] {stripped}")
+                else:
+                    print(f"[{self.label}] {stripped}")
+                    sys.stdout.flush()
+                if log_f:
+                    log_f.write(line)
+                    log_f.flush()
+        except Exception as e:
+            self.logger.error(f"{self.label}: log reader error: {e}")
+        finally:
+            if log_f:
+                log_f.close()
 
-    def has_error_burst(self, threshold: int = 3, window_sec: int = 60) -> bool:
-        """Returns True when stdout ERROR count is greater than threshold in window."""
-        return self.get_error_count(window_sec=window_sec) > threshold
+
+class SingboxManager(BaseEngineManager):
+    """Sing-Box process manager."""
+    def __init__(self, singbox_path: str, config_path: Path,
+                 ui: Optional[Any] = None, log_file: Optional[str] = None, quiet: bool = False):
+        super().__init__(singbox_path, config_path, "sing-box", ui, log_file, quiet)
+
+
+class XrayManager(BaseEngineManager):
+    """Xray-core process manager."""
+    def __init__(self, xray_path: str, config_path: Path,
+                 ui: Optional[Any] = None, log_file: Optional[str] = None, quiet: bool = False):
+        super().__init__(xray_path, config_path, "xray", ui, log_file, quiet)

@@ -1,3 +1,5 @@
+import os
+import tempfile
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -86,8 +88,7 @@ class TestingConfig:
     failure_threshold: int = 3
     initial_delay: int = 10  # sec
     max_test: int = 100
-    healthcheck_content_url: str = ""
-    healthcheck_content_md5: str = ""
+    verify_tls: bool = False
 
 
 @dataclass
@@ -100,9 +101,6 @@ class SelectionConfig:
     switch_delay: int = 10  # sec
     backup_profiles_count: int = 3
     preferred_engine: str = "auto"  # "auto", "xray", "singbox", "happ"
-    max_test_profiles: int = 100
-    test_timeout: int = 5
-    test_real_connection: bool = False
 
 
 @dataclass
@@ -198,8 +196,7 @@ class ConfigManager:
             initial_delay=parse_time_interval(
                 test.get("initial_delay", "10s")),
             max_test=test.get("max_test", 100),
-            healthcheck_content_url=test.get("healthcheck_content_url", None),
-            healthcheck_content_md5=test.get("healthcheck_content_md5", None),
+            verify_tls=test.get("verify_tls", False),
         )
 
         # Selection config — migrate from prefer_xray to preferred_engine
@@ -215,9 +212,6 @@ class ConfigManager:
             switch_delay=parse_time_interval(sel.get("switch_delay", "10s")),
             backup_profiles_count=sel.get("backup_profiles_count", 3),
             preferred_engine=preferred_engine,
-            max_test_profiles=sel.get("max_test_profiles", 100),
-            test_timeout=sel.get("test_timeout", 5),
-            test_real_connection=sel.get("test_real_connection", False),
         )
 
         # Cache config
@@ -300,12 +294,9 @@ class ConfigManager:
             "healthcheck_interval": format_time_interval(self.config.testing.healthcheck_interval),
             "failure_threshold": self.config.testing.failure_threshold,
             "initial_delay": format_time_interval(self.config.testing.initial_delay),
-            "max_test": self.config.testing.max_test
+            "max_test": self.config.testing.max_test,
+            "verify_tls": self.config.testing.verify_tls,
         }
-        if self.config.testing.healthcheck_content_url:
-            data["testing"]["healthcheck_content_url"] = self.config.testing.healthcheck_content_url
-        if self.config.testing.healthcheck_content_md5:
-            data["testing"]["healthcheck_content_md5"] = self.config.testing.healthcheck_content_md5
 
         # Update selection
         data["selection"] = {
@@ -315,14 +306,18 @@ class ConfigManager:
             "switch_delay": format_time_interval(self.config.selection.switch_delay),
             "backup_profiles_count": self.config.selection.backup_profiles_count,
             "preferred_engine": self.config.selection.preferred_engine,
-            "max_test_profiles": self.config.selection.max_test_profiles,
-            "test_timeout": self.config.selection.test_timeout,
-            "test_real_connection": self.config.selection.test_real_connection
         }
 
-        with open(self.config_path, "w", encoding="utf-8") as f:
-            yaml.dump(data, f, sort_keys=False,
-                      allow_unicode=True, default_flow_style=False)
+        # Атомарная запись: write → temp → rename (чтобы не повредить файл при сбое)
+        fd, tmp = tempfile.mkstemp(dir=str(self.config_path.parent), suffix=".yaml")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                yaml.dump(data, f, sort_keys=False, allow_unicode=True, default_flow_style=False)
+            os.replace(tmp, str(self.config_path))
+        except Exception:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+            raise
 
     def get_config(self) -> Config:
         if self.config is None:

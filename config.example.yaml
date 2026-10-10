@@ -37,16 +37,15 @@ network:
 
 testing:
   healthcheck_urls:
-    - "https://google.com"
     - "https://1.1.1.1/cdn-cgi/trace"
     - "http://connectivitycheck.gstatic.com/generate_204"
-  healthcheck_content_url: ""
-  healthcheck_content_md5: ""
-  timeout: 1
+    - "https://google.com"
+  timeout: 5
   healthcheck_interval: "30s"
   failure_threshold: 3
   initial_delay: "10s"
   max_test: 100
+  # verify_tls: true   # раскомментировать для проверки TLS-сертификатов
 
 selection:
   strategy: "latency"
