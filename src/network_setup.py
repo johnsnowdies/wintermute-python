@@ -1,4 +1,5 @@
 import json
+import os
 import shlex
 import subprocess
 import socket
@@ -248,19 +249,22 @@ def setup_iptables_rules(
     # 2. Маркировать весь остальной трафик с LAN-интерфейса
     rules.append(f"iptables -t mangle -A PREROUTING -i {lan_interface} -j MARK --set-mark 0x2")
 
-    # 3. Создать отдельную таблицу маршрутизации для маркированных пакетов
-    tbl = "wintermute_routing"
+    # 3. Policy-routing для маркированных пакетов
+    # Номер 200 зарезервирован, имя wintermute_routing — для справки в rt_tables
+    TBL_ID = 200
     try:
-        with open("/etc/iproute2/rt_tables", "r") as f:
-            if tbl not in f.read():
-                with open("/etc/iproute2/rt_tables", "a") as f:
-                    f.write(f"\n200 {tbl}\n")
+        rt_path = "/etc/iproute2/rt_tables"
+        os.makedirs(os.path.dirname(rt_path), exist_ok=True)
+        line = f"{TBL_ID} wintermute_routing\n"
+        if not os.path.exists(rt_path) or line not in open(rt_path).read():
+            with open(rt_path, "a") as f:
+                f.write(line)
     except Exception as e:
         logger.warning(f"  rt_tables warning: {e}")
 
-    rules.append(f"ip rule add fwmark 0x2 table {tbl}")
-    rules.append(f"ip route add {tun_subnet} dev {tun_interface} table {tbl}")
-    rules.append(f"ip route add default dev {tun_interface} table {tbl}")
+    rules.append(f"ip rule add fwmark 0x2 table {TBL_ID}")
+    rules.append(f"ip route add {tun_subnet} dev {tun_interface} table {TBL_ID}")
+    rules.append(f"ip route add default dev {tun_interface} table {TBL_ID}")
 
     # 4. NAT для трафика из TUN
     rules.append(f"iptables -t nat -A POSTROUTING -o {tun_interface} -j MASQUERADE")
@@ -298,10 +302,10 @@ def cleanup_iptables_rules(rules: List[str]):
         elif rule.startswith("ip rule add"):
             _run(rule.replace(" add ", " del "))
 
-    # ── Удаляем ip-route и ip -6-route ─────────────────────────────────
-    subprocess.run(["ip", "rule", "del", "fwmark", "0x2", "table", "wintermute_routing"],
+    # ── Удаляем ip-route и ip -6-route (table 200 = wintermute_routing) ─
+    subprocess.run(["ip", "rule", "del", "fwmark", "0x2", "table", "200"],
                    capture_output=True, check=False)
-    subprocess.run(["ip", "route", "flush", "table", "wintermute_routing"],
+    subprocess.run(["ip", "route", "flush", "table", "200"],
                    capture_output=True, check=False)
 
     for rule in reversed(rules):
