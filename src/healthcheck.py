@@ -1,8 +1,9 @@
 """
-Healthcheck — упрощён: только базовая проверка по списку URL.
-Вся логика content-md5, внешние колбеки — выпилены.
+Healthcheck — watchdog туннеля: базовая проверка по списку URL +
+опциональная проверка контента (скачивание файла + сверка MD5).
 """
 
+import hashlib
 import random
 import threading
 import time
@@ -27,7 +28,8 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 class HealthChecker:
     """
-    Простой watchdog туннеля: periodic checks по списку URL.
+    Watchdog туннеля: periodic checks по списку URL + опциональная
+    проверка контента (скачивание файла + сверка MD5).
     При превышении failure_threshold вызывает on_failure.
     """
 
@@ -40,6 +42,9 @@ class HealthChecker:
         on_failure_callback: Optional[Callable] = None,
         initial_delay: int = 10,
         verify_tls: bool = False,
+        content_check_enabled: bool = False,
+        content_check_url: str = "",
+        content_check_md5: str = "",
     ):
         self.check_urls = check_urls
         self.check_interval = check_interval
@@ -48,6 +53,9 @@ class HealthChecker:
         self.on_failure_callback = on_failure_callback
         self.initial_delay = initial_delay
         self.verify_tls = verify_tls
+        self.content_check_enabled = content_check_enabled
+        self.content_check_url = content_check_url
+        self.content_check_md5 = content_check_md5
 
         self._running = False
         self._thread: Optional[threading.Thread] = None
@@ -110,15 +118,48 @@ class HealthChecker:
             time.sleep(_jitter(self.check_interval))
 
     def _check_connection(self) -> bool:
-        """Проверка: хотя бы один URL отвечает 200/204."""
+        """Проверка: хотя бы один URL отвечает 200/204 + опционально проверка контента (скачивание + MD5)."""
         for url in self.check_urls:
             try:
                 resp = requests.get(url, timeout=self.timeout, verify=self.verify_tls, headers={"User-Agent": _UA})
                 if resp.status_code in (200, 204):
+                    # Базовая проверка пройдена — теперь проверка контента (если включена)
+                    if self.content_check_enabled and self.content_check_url and self.content_check_md5:
+                        return self._check_content()
                     return True
             except Exception:
                 continue
         return False
+
+    def _check_content(self) -> bool:
+        """
+        Скачивает файл по content_check_url, вычисляет MD5 и сверяет
+        с ожидаемым хешем. Если не совпадает или ошибка — False.
+        """
+        try:
+            self.logger.info(f"Content check: downloading {self.content_check_url}")
+            resp = requests.get(
+                self.content_check_url,
+                timeout=self.timeout,
+                verify=self.verify_tls,
+                headers={"User-Agent": _UA},
+            )
+            if resp.status_code != 200:
+                self.logger.warning(f"Content check: HTTP {resp.status_code}, expected 200")
+                return False
+
+            actual_md5 = hashlib.md5(resp.content).hexdigest()
+            self.logger.info(f"Content check: MD5={actual_md5}, expected={self.content_check_md5}")
+
+            if actual_md5 == self.content_check_md5:
+                return True
+            else:
+                self.logger.warning(f"Content check: MD5 mismatch ({actual_md5} != {self.content_check_md5})")
+                return False
+
+        except Exception as e:
+            self.logger.error(f"Content check error: {e}")
+            return False
 
     def force_check(self) -> bool:
         return self._check_connection()

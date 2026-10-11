@@ -89,6 +89,10 @@ class TestingConfig:
     initial_delay: int = 10  # sec
     max_test: int = 100
     verify_tls: bool = False
+    # Content-verification check (download file + MD5)
+    healthcheck_content_enabled: bool = False
+    healthcheck_content_url: str = ""
+    healthcheck_content_md5: str = ""
 
 
 @dataclass
@@ -197,6 +201,9 @@ class ConfigManager:
                 test.get("initial_delay", "10s")),
             max_test=test.get("max_test", 100),
             verify_tls=test.get("verify_tls", False),
+            healthcheck_content_enabled=test.get("healthcheck_content_enabled", False),
+            healthcheck_content_url=test.get("healthcheck_content_url", ""),
+            healthcheck_content_md5=test.get("healthcheck_content_md5", ""),
         )
 
         # Selection config — migrate from prefer_xray to preferred_engine

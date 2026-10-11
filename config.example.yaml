@@ -47,6 +47,11 @@ testing:
   max_test: 100
   # verify_tls: true   # раскомментировать для проверки TLS-сертификатов
 
+  # Проверка контента: скачивание файла + сверка MD5
+  # healthcheck_content_enabled: true
+  # healthcheck_content_url: "http://45.131.42.56/check.txt"
+  # healthcheck_content_md5: "9f26e571e00114da0fc183d72ed85512"
+
 selection:
   strategy: "latency"
   min_acceptable_latency: 500

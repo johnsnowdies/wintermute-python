@@ -650,7 +650,11 @@ class Wintermute:
         return True
 
     def start_healthcheck(self):
-        """Start tunnel watchdog (упрощённый)."""
+        """
+        Start tunnel watchdog + опциональная одноразовая проверка контента.
+        Если проверка контента включена и не проходит — профиль считается
+        нерабочим, помечается broken и запускается переключение на backup.
+        """
         self.healthchecker = HealthChecker(
             check_urls=self.config.testing.healthcheck_urls or ["https://google.com"],
             check_interval=self.config.testing.healthcheck_interval,
@@ -659,13 +663,43 @@ class Wintermute:
             on_failure_callback=self.on_tunnel_failure,
             initial_delay=self.config.testing.initial_delay,
             verify_tls=self.config.testing.verify_tls,
+            content_check_enabled=self.config.testing.healthcheck_content_enabled,
+            content_check_url=self.config.testing.healthcheck_content_url,
+            content_check_md5=self.config.testing.healthcheck_content_md5,
         )
+
+        # Одноразовая проверка контента при старте (если включена в конфиге)
+        if self.config.testing.healthcheck_content_enabled:
+            self.logger.info("Content verification enabled — running initial check...")
+            if not self.healthchecker.force_check():
+                self.logger.error("Initial content check FAILED — profile is NOT working")
+                current = self.profile_manager.get_selected_profile()
+                if current:
+                    self.profile_manager.mark_profile_as_broken(current)
+                    self.ui.set_status_data(
+                        broken_profiles=self.profile_manager.broken_profiles.copy()
+                    )
+                    self.ui.add_app_log(
+                        f"[red]Content check failed: {current.comment or current.host} marked broken[/red]"
+                    )
+                self.healthchecker = None
+                # Запускаем переключение на backup / retest
+                self.on_tunnel_failure()
+                return
+            else:
+                self.logger.info("Initial content check PASSED")
+
         self.healthchecker.start()
 
     def on_tunnel_failure(self):
         """Called on tunnel failure — пробуем backup, иначе retest."""
         self.logger.warning("TUNNEL FAILURE DETECTED, RECOVERING...")
         self.ui.set_mode("TESTING")
+
+        # Останавливаем старый healthchecker (он будет пересоздан в start_healthcheck)
+        if self.healthchecker:
+            self.healthchecker.stop()
+            self.healthchecker = None
 
         if self.singbox_manager:
             self.singbox_manager.stop()
@@ -685,6 +719,7 @@ class Wintermute:
             if self.setup_singbox():
                 self.logger.info("Backup resolved, switched to WORKING")
                 self.ui.set_mode("WORKING")
+                self.start_healthcheck()
                 return
 
         self.logger.warning("Backups exhausted, full retest...")
@@ -692,6 +727,7 @@ class Wintermute:
             if self.setup_singbox():
                 self.logger.info("Retest resolved, switched to WORKING")
                 self.ui.set_mode("WORKING")
+                self.start_healthcheck()
 
     def start_profile_refresh(self):
         """Background process of profile auto-refresh"""
@@ -797,6 +833,11 @@ class Wintermute:
         """Force switch to the next best profile and mark current as broken"""
         self.logger.info("Manual profile switch requested (F6)")
 
+        # Stop old healthchecker
+        if self.healthchecker:
+            self.healthchecker.stop()
+            self.healthchecker = None
+
         current_profile = self.profile_manager.get_selected_profile()
         if current_profile:
             self.profile_manager.mark_profile_as_broken(current_profile)
@@ -825,6 +866,7 @@ class Wintermute:
                 if self.load_and_select_profile():
                     if self.setup_singbox():
                         self.ui.set_mode("WORKING")
+                        self.start_healthcheck()
 
             threading.Thread(target=run_retest_and_switch, daemon=True).start()
             return
@@ -842,6 +884,7 @@ class Wintermute:
         if self.setup_singbox():
             self.ui.set_mode("WORKING")
             self.ui.add_app_log(f"[green]Switched to[/green] {best.comment or best.host}")
+            self.start_healthcheck()
 
     def retest(self):
         """Reset broken profiles and start a full re-test"""
