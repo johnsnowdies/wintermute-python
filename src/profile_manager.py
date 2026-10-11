@@ -659,6 +659,79 @@ class ProfileParser:
         return None
 
 
+def _build_outbound(profile: Profile) -> dict:
+    """Build sing-box outbound dict from Profile (без Wintermute)."""
+    extra = profile.extra
+    if profile.protocol == "shadowsocks":
+        return {
+            "type": "shadowsocks",
+            "tag": "proxy",
+            "server": profile.host,
+            "server_port": profile.port,
+            "method": extra.get("method", "chacha20-ietf-poly1305"),
+            "password": extra.get("password", "password"),
+        }
+    # vless (sing-box format)
+    outbound = {
+        "type": "vless",
+        "tag": "proxy",
+        "server": profile.host,
+        "server_port": profile.port,
+        "uuid": extra.get("uuid", ""),
+    }
+    if extra.get("flow") and extra["flow"] != "none":
+        flow = extra["flow"]
+        if flow.endswith("-udp443"):
+            flow = flow[:-7]
+        outbound["flow"] = flow
+
+    xtype = extra.get("type", "tcp")
+    if xtype != "tcp":
+        transport = {"type": xtype}
+        if xtype == "ws":
+            path = extra.get("path", "/")
+            if "?ed=" in path:
+                path = path.split("?ed=")[0]
+            transport["path"] = path
+            if extra.get("ws_host"):
+                transport["headers"] = {"Host": extra["ws_host"]}
+        elif xtype == "xhttp":
+            transport = {
+                "type": "xhttp",
+                "path": extra.get("path", "/"),
+                "host": extra.get("host", ""),
+                "mode": extra.get("mode", "auto"),
+                "extra": extra.get("extra", ""),
+            }
+        elif xtype == "http":
+            transport["path"] = extra.get("path", "/")
+            if extra.get("http_host"):
+                transport["host"] = [extra["http_host"]]
+            transport["method"] = "GET"
+        outbound["transport"] = transport
+
+    security = extra.get("security", "none")
+    if security in ("tls", "reality"):
+        tls_config = {"enabled": True, "utls": {}, "reality": {}}
+        if extra.get("sni"):
+            tls_config["server_name"] = extra["sni"]
+        tls_config["utls"] = {
+            "enabled": True,
+            "fingerprint": extra.get("fp", "chrome"),
+        }
+        tls_config["tls_fragment"] = True
+        if security == "reality" and extra.get("pbk"):
+            tls_config["reality"] = {
+                "enabled": True,
+                "public_key": extra["pbk"],
+                "short_id": extra.get("sid", ""),
+            }
+        outbound["tls"] = tls_config
+
+    outbound["packet_encoding"] = extra.get("packet_encoding", "xudp")
+    return outbound
+
+
 class ProfileTester:
     """Testing profiles"""
 
@@ -669,7 +742,7 @@ class ProfileTester:
     def test_tcp_connection(
         profile: Profile, timeout: int = 1
     ) -> Tuple[bool, Optional[int]]:
-        """Simple TCP connection check (единственный метод проверки)."""
+        """Simple TCP connection check (первичная проверка)."""
         try:
             start_time = time.time()
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -682,21 +755,172 @@ class ProfileTester:
             return False, None
 
     @staticmethod
+    def test_content_connection(
+        profile: Profile,
+        timeout: int = 5,
+        content_url: str = "",
+        content_md5: str = "",
+        singbox_path: Optional[str] = None,
+        xray_path: Optional[str] = None,
+        verify_tls: bool = False,
+    ) -> bool:
+        """
+        Проверка контента через профиль: поднимает sing-box/xray в proxy-mode
+        (SOCKS5 inbound), запрашивает content_url, сверяет MD5.
+        Если файл не скачался или MD5 не совпал — профиль НЕ рабочий.
+        """
+        logger = get_logger(__name__)
+        if not content_url or not content_md5:
+            return True
+
+        import json
+        import os
+        import tempfile
+
+        use_xray = profile.extra.get("type") == "xhttp"
+        engine_path = xray_path if use_xray else singbox_path
+        if not engine_path or not os.path.isfile(engine_path):
+            logger.warning(f"{('xray' if use_xray else 'sing-box')} not found, skipping content check for {profile.comment or profile.host}")
+            return False
+
+        proxy_port = ProfileTester.STARTING_PORT + hash(profile.raw_url) % 10000
+
+        try:
+            outbound = _build_outbound(profile)
+        except Exception as e:
+            logger.error(f"Content check: cannot create outbound for {profile.comment or profile.host}: {e}")
+            return False
+
+        proxy_host = "127.0.0.1"
+
+        if use_xray:
+            config = {
+                "log": {"loglevel": "error"},
+                "inbounds": [{
+                    "listen": proxy_host,
+                    "port": proxy_port,
+                    "protocol": "socks",
+                    "settings": {"auth": "no", "udp": False},
+                    "tag": "socks-in",
+                }],
+                "outbounds": [outbound, {"protocol": "freedom", "tag": "direct"}],
+                "routing": {
+                    "domainStrategy": "AsIs",
+                    "rules": [
+                        {"type": "field", "outboundTag": "proxy", "port": "0-65535"},
+                    ],
+                },
+            }
+        else:
+            config = {
+                "log": {"level": "error", "timestamp": True},
+                "inbounds": [{
+                    "type": "mixed",
+                    "tag": "mixed-in",
+                    "listen": proxy_host,
+                    "listen_port": proxy_port,
+                }],
+                "outbounds": [outbound, {"type": "direct", "tag": "direct"}],
+                "route": {
+                    "rules": [
+                        {"inbound": "mixed-in", "outbound": "proxy"},
+                        {"ip_cidr": ["127.0.0.0/8"], "outbound": "direct"},
+                    ],
+                    "final": "proxy",
+                },
+            }
+
+        # Временный конфиг
+        tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False)
+        try:
+            json.dump(config, tmp, indent=2)
+            tmp.close()
+            config_path = tmp.name
+
+            proc = subprocess.Popen(
+                [engine_path, "run", "-c", config_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+            # Ждём старта
+            import socket as sk
+            started = False
+            for _ in range(timeout * 2):
+                s = sk.socket(sk.AF_INET, sk.SOCK_STREAM)
+                s.settimeout(0.3)
+                if s.connect_ex((proxy_host, proxy_port)) == 0:
+                    s.close()
+                    started = True
+                    break
+                s.close()
+                time.sleep(0.5)
+
+            if not started:
+                logger.warning(f"Content check: engine not started for {profile.comment or profile.host}")
+                proc.kill()
+                proc.wait(timeout=2)
+                return False
+
+            # Запрос через SOCKS5/HTTP-proxy (mixed inbound)
+            proxies = {
+                "http": f"socks5://{proxy_host}:{proxy_port}",
+                "https": f"socks5://{proxy_host}:{proxy_port}",
+            }
+            try:
+                resp = requests.get(
+                    content_url,
+                    timeout=timeout,
+                    verify=verify_tls,
+                    proxies=proxies,
+                    headers={"User-Agent": _BROWSER_UA},
+                )
+                if resp.status_code != 200:
+                    logger.warning(f"Content check: HTTP {resp.status_code} for {profile.comment or profile.host}")
+                    return False
+
+                actual_md5 = hashlib.md5(resp.content).hexdigest()
+                if actual_md5 == content_md5:
+                    logger.debug(f"Content check PASSED for {profile.comment or profile.host}: MD5={actual_md5}")
+                    return True
+                else:
+                    logger.warning(f"Content check MD5 mismatch for {profile.comment or profile.host}: {actual_md5} != {content_md5}")
+                    return False
+            except Exception as e:
+                logger.warning(f"Content check request failed for {profile.comment or profile.host}: {e}")
+                return False
+            finally:
+                proc.kill()
+                proc.wait(timeout=2)
+        except Exception as e:
+            logger.error(f"Content check error for {profile.comment or profile.host}: {e}")
+            return False
+        finally:
+            try:
+                os.unlink(config_path)
+            except Exception:
+                pass
+
+    @staticmethod
     async def _test_single_profile(
         profile: Profile,
         idx: int,
         timeout: int,
         semaphore: Optional[asyncio.Semaphore] = None,
+        content_check_config: Optional[dict] = None,
     ) -> Optional[Profile]:
         """Тестирование одного профиля (asyncio)."""
         if semaphore:
             async with semaphore:
-                return await ProfileTester._do_test_profile(profile, idx, timeout)
-        return await ProfileTester._do_test_profile(profile, idx, timeout)
+                return await ProfileTester._do_test_profile(profile, idx, timeout, content_check_config)
+        return await ProfileTester._do_test_profile(profile, idx, timeout, content_check_config)
 
     @staticmethod
     async def _do_test_profile(
-        profile: Profile, idx: int, timeout: int
+        profile: Profile,
+        idx: int,
+        timeout: int,
+        content_check_config: Optional[dict] = None,
     ) -> Optional[Profile]:
         logger = get_logger(__name__)
         logger.debug(f"[{idx+1:2d}] {profile.host}:{profile.port} ({profile.protocol.upper()})...")
@@ -707,10 +931,33 @@ class ProfileTester:
         profile.is_working = success
         profile.latency = latency
         profile.last_tested = time.time()
-        if success:
-            logger.debug(f"Profile {profile.comment} result is {latency}ms")
-            return profile
-        return None
+        if not success:
+            return None
+
+        logger.debug(f"Profile {profile.comment} TCP OK ({latency}ms)")
+
+        # Проверка контента (если включена в конфиге)
+        if content_check_config and content_check_config.get("enabled"):
+            cc_ok = await loop.run_in_executor(
+                None,
+                ProfileTester.test_content_connection,
+                profile,
+                content_check_config.get("timeout", timeout * 2),
+                content_check_config.get("url", ""),
+                content_check_config.get("md5", ""),
+                content_check_config.get("singbox_path"),
+                content_check_config.get("xray_path"),
+                content_check_config.get("verify_tls", False),
+            )
+            if not cc_ok:
+                logger.debug(f"Profile {profile.comment} content check FAILED")
+                profile.is_working = False
+                profile.latency = None
+                return None
+            logger.debug(f"Profile {profile.comment} content check PASSED")
+
+        logger.debug(f"Profile {profile.comment} result is {latency}ms")
+        return profile
 
     @staticmethod
     async def _test_profiles_async(
@@ -718,6 +965,7 @@ class ProfileTester:
         max_test: int,
         timeout: int,
         on_progress: Optional[Callable[[int, int], None]] = None,
+        content_check_config: Optional[dict] = None,
     ) -> List[Profile]:
         logger = get_logger(__name__)
         total_to_test = min(len(profiles), max_test)
@@ -725,7 +973,7 @@ class ProfileTester:
         semaphore = asyncio.Semaphore(ProfileTester.MAX_CONCURRENT)
 
         tasks = [
-            ProfileTester._test_single_profile(p, i, timeout, semaphore)
+            ProfileTester._test_single_profile(p, i, timeout, semaphore, content_check_config)
             for i, p in enumerate(profiles[:max_test])
         ]
 
@@ -757,9 +1005,10 @@ class ProfileTester:
         max_test: int = 100,
         timeout: int = 1,
         on_progress: Optional[Callable[[int, int], None]] = None,
+        content_check_config: Optional[dict] = None,
     ) -> List[Profile]:
         return asyncio.run(
-            ProfileTester._test_profiles_async(profiles, max_test, timeout, on_progress)
+            ProfileTester._test_profiles_async(profiles, max_test, timeout, on_progress, content_check_config)
         )
 
 
@@ -989,15 +1238,16 @@ class ProfileManager:
         min_latency: int = 500,
         preferred_engine: str = "auto",
         on_progress: Optional[Callable[[int, int], None]] = None,
+        content_check_config: Optional[dict] = None,
     ) -> Optional[Profile]:
         """
-        Tests profiles (TCP only) and selects the best one.
+        Tests profiles (TCP + опционально проверка контента) and selects the best one.
         """
         with self._lock:
             profiles_to_test = self.profiles.copy()
 
         self.working_profiles = ProfileTester.test_profiles(
-            profiles_to_test, max_test, timeout, on_progress
+            profiles_to_test, max_test, timeout, on_progress, content_check_config
         )
 
         if not self.working_profiles:

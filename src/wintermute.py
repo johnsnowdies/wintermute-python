@@ -520,6 +520,7 @@ class Wintermute:
             min_latency=self.config.selection.min_acceptable_latency,
             preferred_engine=self.config.selection.preferred_engine,
             on_progress=self.ui.set_progress,
+            content_check_config=self._get_content_check_config(),
         )
 
         # Clear progress after tests
@@ -648,6 +649,21 @@ class Wintermute:
                 self.logger.warning("ipv4_forward is enabled but lan_interface is not set or 'none'. Skipping NAT setup.")
 
         return True
+
+    def _get_content_check_config(self) -> Optional[dict]:
+        """Build content-check config dict for ProfileTester, or None if disabled."""
+        cc = self.config.testing
+        if not cc.healthcheck_content_enabled:
+            return None
+        return {
+            "enabled": True,
+            "url": cc.healthcheck_content_url,
+            "md5": cc.healthcheck_content_md5,
+            "timeout": cc.timeout,
+            "verify_tls": cc.verify_tls,
+            "singbox_path": find_singbox(),
+            "xray_path": find_xray(),
+        }
 
     def start_healthcheck(self):
         """
@@ -988,6 +1004,7 @@ class Wintermute:
                     min_latency=self.config.selection.min_acceptable_latency,
                     preferred_engine=self.config.selection.preferred_engine,
                     on_progress=self.ui.set_progress,
+                    content_check_config=self._get_content_check_config(),
                 )
                 if best:
                     self.ui.set_profile(best.comment or best.host)
