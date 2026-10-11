@@ -719,7 +719,6 @@ def _build_outbound(profile: Profile) -> dict:
             "enabled": True,
             "fingerprint": extra.get("fp", "chrome"),
         }
-        tls_config["tls_fragment"] = True
         if security == "reality" and extra.get("pbk"):
             tls_config["reality"] = {
                 "enabled": True,
@@ -828,18 +827,22 @@ class ProfileTester:
                         "headers": transport.get("headers", {}),
                     }
                 elif ntype == "xhttp":
-                    xhttp_extra = transport.get("extra", {})
-                    if isinstance(xhttp_extra, str):
-                        try:
-                            xhttp_extra = json.loads(xhttp_extra)
-                        except Exception:
-                            xhttp_extra = {}
-                    xray_outbound["streamSettings"]["xhttpSettings"] = {
+                    xhttp_settings = {
                         "path": transport.get("path", "/"),
                         "host": transport.get("host", ""),
                         "mode": transport.get("mode", "auto"),
-                        "extra": xhttp_extra,
                     }
+                    raw_extra = transport.get("extra", "")
+                    if isinstance(raw_extra, str):
+                        try:
+                            parsed = json.loads(raw_extra)
+                            if parsed and isinstance(parsed, dict):
+                                xhttp_settings["extra"] = parsed
+                        except Exception:
+                            pass
+                    elif raw_extra and isinstance(raw_extra, dict):
+                        xhttp_settings["extra"] = raw_extra
+                    xray_outbound["streamSettings"]["xhttpSettings"] = xhttp_settings
             tls = outbound.get("tls", {})
             if tls.get("enabled"):
                 if tls.get("reality", {}).get("enabled"):
