@@ -670,7 +670,12 @@ class Wintermute:
         Start tunnel watchdog + опциональная одноразовая проверка контента.
         Если проверка контента включена и не проходит — профиль считается
         нерабочим, помечается broken и запускается переключение на backup.
+
+        Если healthcheck выключен пользователем (F9), ничего не делаем.
         """
+        if not self.ui.healthcheck_enabled:
+            self.logger.info("Healthcheck disabled by user, skipping start")
+            return
         self.healthchecker = HealthChecker(
             check_urls=self.config.testing.healthcheck_urls or ["https://google.com"],
             check_interval=self.config.testing.healthcheck_interval,
