@@ -303,6 +303,9 @@ class ConfigManager:
             "initial_delay": format_time_interval(self.config.testing.initial_delay),
             "max_test": self.config.testing.max_test,
             "verify_tls": self.config.testing.verify_tls,
+            "healthcheck_content_enabled": self.config.testing.healthcheck_content_enabled,
+            "healthcheck_content_url": self.config.testing.healthcheck_content_url,
+            "healthcheck_content_md5": self.config.testing.healthcheck_content_md5,
         }
 
         # Update selection
