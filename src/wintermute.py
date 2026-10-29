@@ -51,6 +51,11 @@ class Wintermute:
         self.profile_manager = ProfileManager(
             cache_dir=cache_dir, use_cache=self.config.cache.enabled,
             config=config_path, verify_tls=self.config.testing.verify_tls,
+            hwid_enabled=self.config.hwid.enabled,
+            hwid_value=self.config.hwid.value,
+            hwid_user_agent=self.config.hwid.user_agent,
+            hwid_device_model=self.config.hwid.device_model,
+            hwid_device_os=self.config.hwid.device_os,
         )
         self.singbox_manager: Optional[SingboxManager] = None
         self.xray_manager: Optional[XrayManager] = None

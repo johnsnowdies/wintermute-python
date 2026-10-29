@@ -115,6 +115,26 @@ class CacheConfig:
 
 
 @dataclass
+class HwidConfig:
+    """HWID (Hardware ID) configuration for subscription requests.
+
+    Many modern VPN providers (Happ, Throne, Remnawave, Lastdep, etc.)
+    require a unique Hardware ID to be sent via the X-Hwid header.
+    Without it, they return a stub/dummy subscription.
+    """
+    enabled: bool = True
+    auto_generate: bool = True
+    # If set, overrides auto-generated HWID
+    value: str = ""
+    # Custom User-Agent for subscription requests
+    user_agent: str = ""
+    # Device model reported to the server
+    device_model: str = ""
+    # Device OS reported to the server
+    device_os: str = ""
+
+
+@dataclass
 class Config:
     sources: List[SourceConfig]
     network: NetworkConfig
@@ -122,6 +142,7 @@ class Config:
     selection: SelectionConfig
     cache: CacheConfig
     logging: LoggingConfig
+    hwid: HwidConfig = field(default_factory=HwidConfig)
 
 
 class ConfigManager:
@@ -230,6 +251,17 @@ class ConfigManager:
             fallback_on_error=cache_data.get("fallback_on_error", True),
         )
 
+        # HWID config
+        hwid_data = data.get("hwid", {})
+        hwid_cfg = HwidConfig(
+            enabled=hwid_data.get("enabled", True),
+            auto_generate=hwid_data.get("auto_generate", True),
+            value=hwid_data.get("value", ""),
+            user_agent=hwid_data.get("user_agent", ""),
+            device_model=hwid_data.get("device_model", ""),
+            device_os=hwid_data.get("device_os", ""),
+        )
+
         self.config = Config(
             sources=sources,
             network=network,
@@ -237,6 +269,7 @@ class ConfigManager:
             selection=selection,
             cache=cache,
             logging=logging_cfg,
+            hwid=hwid_cfg,
         )
 
         return self.config
@@ -306,6 +339,16 @@ class ConfigManager:
             "healthcheck_content_enabled": self.config.testing.healthcheck_content_enabled,
             "healthcheck_content_url": self.config.testing.healthcheck_content_url,
             "healthcheck_content_md5": self.config.testing.healthcheck_content_md5,
+        }
+
+        # Update HWID config
+        data["hwid"] = {
+            "enabled": self.config.hwid.enabled,
+            "auto_generate": self.config.hwid.auto_generate,
+            "value": self.config.hwid.value,
+            "user_agent": self.config.hwid.user_agent,
+            "device_model": self.config.hwid.device_model,
+            "device_os": self.config.hwid.device_os,
         }
 
         # Update selection

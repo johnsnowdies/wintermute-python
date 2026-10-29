@@ -139,10 +139,20 @@ class ProfileCache:
 class ProfileLoader:
     """Loader of profiles from sources"""
 
-    def __init__(self, cache_dir: Optional[str] = None, use_cache: bool = True, verify_tls: bool = False):
+    def __init__(
+        self, cache_dir: Optional[str] = None, use_cache: bool = True,
+        verify_tls: bool = False, hwid_enabled: bool = True,
+        hwid_value: str = "", hwid_user_agent: str = "",
+        hwid_device_model: str = "", hwid_device_os: str = "",
+    ):
         self.cache = ProfileCache(cache_dir) if use_cache else None
         self.verify_tls = verify_tls
         self.logger = get_logger(__name__)
+        self._hwid_enabled = hwid_enabled
+        self._hwid_value = hwid_value
+        self._hwid_user_agent = hwid_user_agent
+        self._hwid_device_model = hwid_device_model
+        self._hwid_device_os = hwid_device_os
 
     # ── hpwnr helpers ────────────────────────────────────────────────────
 
@@ -323,6 +333,32 @@ class ProfileLoader:
             return "\n".join(uris)
         return None
 
+    def _build_hwid_headers(self) -> dict:
+        """
+        Build HTTP headers including HWID for subscription requests.
+
+        Modern VPN providers (Happ, Throne, Remnawave, Lastdep, etc.)
+        require X-Hwid header to return real subscription data.
+        """
+        if not self._hwid_enabled:
+            return {"User-Agent": _BROWSER_UA}
+
+        from hwid import get_or_create_hwid, get_device_headers
+
+        hwid = self._hwid_value if self._hwid_value else get_or_create_hwid()
+        base_headers = get_device_headers(hwid=hwid)
+
+        # Override with user-configured values
+        if self._hwid_user_agent:
+            base_headers["User-Agent"] = self._hwid_user_agent
+        if self._hwid_device_model:
+            base_headers["X-Device-Model"] = self._hwid_device_model
+        if self._hwid_device_os:
+            base_headers["X-Device-Os"] = self._hwid_device_os
+
+        self.logger.debug(f"  HWID headers: X-Hwid={hwid[:12]}..., UA={base_headers.get('User-Agent', '')[:40]}")
+        return base_headers
+
     def _fetch_url(self, url: str, _depth: int = 0) -> Optional[str]:
         """
         Fetch a subscription URL.
@@ -332,8 +368,9 @@ class ProfileLoader:
             self.logger.error(f"  Redirect loop for {url}")
             return None
         try:
+            headers = self._build_hwid_headers()
             response = requests.get(url, timeout=10, verify=self.verify_tls, allow_redirects=False,
-                                    headers={"User-Agent": _BROWSER_UA})
+                                    headers=headers)
 
             if response.is_redirect:
                 location = response.headers.get("Location", "")
@@ -1129,6 +1166,9 @@ class ProfileManager:
     def __init__(
         self, cache_dir: str, use_cache: bool = True, config: str = "config.yaml",
         verify_tls: bool = False,
+        hwid_enabled: bool = True, hwid_value: str = "",
+        hwid_user_agent: str = "", hwid_device_model: str = "",
+        hwid_device_os: str = "",
     ):
         self.profiles: List[Profile] = []
         self.working_profiles: List[Profile] = []
@@ -1136,7 +1176,13 @@ class ProfileManager:
         self.broken_profiles: Set[str] = set()     # raw_url сломанных
         self.happ_urls: Set[str] = set()            # raw_url пришедших из Happ-источников
         self._lock = threading.Lock()
-        self._loader = ProfileLoader(cache_dir, use_cache, verify_tls)
+        self._loader = ProfileLoader(
+            cache_dir, use_cache, verify_tls,
+            hwid_enabled=hwid_enabled, hwid_value=hwid_value,
+            hwid_user_agent=hwid_user_agent,
+            hwid_device_model=hwid_device_model,
+            hwid_device_os=hwid_device_os,
+        )
         self._refresh_thread: Optional[threading.Thread] = None
         self._running = False
         self._sources = []
