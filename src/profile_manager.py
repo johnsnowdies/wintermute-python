@@ -379,6 +379,11 @@ class ProfileLoader:
                     return location
                 if location.startswith(("http://", "https://")):
                     return self._fetch_url(location, _depth + 1)
+                if location.startswith("/"):
+                    # Относительный редирект — резолвим через базовый URL
+                    from urllib.parse import urljoin
+                    absolute = urljoin(url, location)
+                    return self._fetch_url(absolute, _depth + 1)
                 # Неизвестный редирект
                 self.logger.error(f"  Unknown redirect to {location}")
                 return None
@@ -465,8 +470,8 @@ class ProfileLoader:
                     converted = self._convert_json_to_uris(fetched)
                     content = converted or fetched
 
+        # ── Fallback to cache when fetch returned nothing ────────────────
         if content is None:
-            # Fallback to cache
             if use_cache_fallback and self.cache:
                 cached = self.cache.load(url, max_age=None)
                 if cached:
@@ -474,9 +479,26 @@ class ProfileLoader:
                     return cached
             return []
 
+        # ── Fallback to cache when server returned empty/stub content ────
+        # Сервер мог вернуть 200 OK с заглушкой (из-за User-Agent, HWID...)
+        # — тогда content не None, но реальных профилей нет.
+        # Проверяем: если весь контент — пустые или закомментированные строки,
+        # пробуем кеш.
+        raw_lines = content.split("\n")
+        has_any_content = any(
+            line.strip() and not line.strip().startswith("#")
+            for line in raw_lines
+        )
+        if not has_any_content and use_cache_fallback and self.cache:
+            cached = self.cache.load(url, max_age=None)
+            if cached:
+                self.logger.info(
+                    "   Source returned empty/stub content, using cached profiles"
+                )
+                return cached
+
         # ── Parse lines (decrypt happ:// lines, pass through vless:// etc.) ──
         profiles: List[str] = []
-        raw_lines = content.split("\n")
         for line in raw_lines:
             line = line.strip()
             if not line or line.startswith("#"):
@@ -1294,7 +1316,7 @@ class ProfileManager:
 
                 try:
                     count = self.load_profiles_from_sources(
-                        self._sources, use_cache_fallback=False
+                        self._sources, use_cache_fallback=True
                     )
 
                     if count > 0:
