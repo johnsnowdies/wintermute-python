@@ -479,27 +479,9 @@ class ProfileLoader:
                     return cached
             return []
 
-        # ── Fallback to cache when server returned empty/stub content ────
-        # Сервер мог вернуть 200 OK с заглушкой (из-за User-Agent, HWID...)
-        # — тогда content не None, но реальных профилей нет.
-        # Проверяем: если весь контент — пустые или закомментированные строки,
-        # пробуем кеш.
-        raw_lines = content.split("\n")
-        has_any_content = any(
-            line.strip() and not line.strip().startswith("#")
-            for line in raw_lines
-        )
-        if not has_any_content and use_cache_fallback and self.cache:
-            cached = self.cache.load(url, max_age=None)
-            if cached:
-                self.logger.info(
-                    "   Source returned empty/stub content, using cached profiles"
-                )
-                return cached
-
         # ── Parse lines (decrypt happ:// lines, pass through vless:// etc.) ──
         profiles: List[str] = []
-        for line in raw_lines:
+        for line in content.split("\n"):
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
@@ -540,6 +522,28 @@ class ProfileLoader:
                 profiles.append(line)
 
         self.logger.debug(f"   Profiles found: {len(profiles)}")
+
+        # If no profiles were parsed but the source returned non-empty content
+        # (e.g. ISP block page, stub response) — fall back to cache
+        if not profiles and use_cache_fallback and self.cache:
+            # Проверяем, были ли в контенте строки, не похожие на подписку
+            # (vless://, ss://, vmess://, trojan://, happ://)
+            non_empty_lines = [
+                l for l in content.split("\n")
+                if l.strip() and not l.strip().startswith("#")
+            ]
+            subscription_lines = [
+                l for l in non_empty_lines
+                if l.startswith(("vless://", "ss://", "vmess://", "trojan://", "happ://"))
+            ]
+            if non_empty_lines and not subscription_lines:
+                cached = self.cache.load(url, max_age=None)
+                if cached:
+                    self.logger.info(
+                        "   Source returned non-subscription content (block page?), "
+                        "using cached profiles"
+                    )
+                    return cached
 
         # If the source is Happ-encrypted (оригинал или редирект), отметить профили
         if _happ_out is not None and (is_happ_source or _is_happ_redirect):
